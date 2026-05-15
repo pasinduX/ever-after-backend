@@ -1,0 +1,35 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.production.local
+
+# Go build
+*.exe
+*.exe~
+*.dll
+*.so
+*.so.*
+*.dylib
+*.o
+*.a
+*.out
+
+# Modules
+go.work
+vendor/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Binary
+bin/
+dist/
+
+# Logs
+*.log
