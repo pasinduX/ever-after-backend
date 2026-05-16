@@ -37,8 +37,9 @@ type Secrets struct {
 	S3SecretAccessKey string
 	S3PublicBaseURL   string
 
-	FrontendURL   string
-	MaxUploadSize int64
+	FrontendURL         string
+	FrontendCORSOrigins string
+	MaxUploadSize       int64
 }
 
 func Load() (*Secrets, error) {
@@ -66,6 +67,7 @@ func Load() (*Secrets, error) {
 		S3SecretAccessKey:     requireEnv("S3_SECRET_ACCESS_KEY"),
 		S3PublicBaseURL:       requireEnv("S3_PUBLIC_BASE_URL"),
 		FrontendURL:           getEnv("FRONTEND_URL", "http://localhost:3000"),
+		FrontendCORSOrigins:   getEnv("FRONTEND_ORIGINS", getEnv("FRONTEND_URL", "http://localhost:3000")),
 		MaxUploadSize:         parseInt64(getEnv("MAX_UPLOAD_SIZE", "52428800")),
 	}
 	return s, nil

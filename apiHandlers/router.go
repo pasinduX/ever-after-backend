@@ -34,7 +34,7 @@ func NewRouter(
 	app.Use(recover.New())
 	app.Use(functions.Logger)
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     cfg.FrontendURL,
+		AllowOrigins:     cfg.FrontendCORSOrigins,
 		AllowMethods:     "GET,POST,PATCH,DELETE,OPTIONS",
 		AllowHeaders:     "Accept,Authorization,Content-Type",
 		AllowCredentials: true,
