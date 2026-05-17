@@ -38,6 +38,7 @@ type Wedding struct {
 	CreatedAt      time.Time  `json:"created_at" bson:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at" bson:"updated_at"`
 	UploadCount    int        `json:"upload_count,omitempty" bson:"upload_count,omitempty"`
+	Template       string     `json:"template,omitempty" bson:"template,omitempty"`
 }
 
 func (w *Wedding) UploadLimit() int {
@@ -55,6 +56,7 @@ type CreateWeddingRequest struct {
 	WhatsAppNumber string `json:"whatsapp_number"`
 	Ages           string `json:"ages"`
 	WelcomeMessage string `json:"welcome_message"`
+	Template       string `json:"template,omitempty"`
 }
 
 type UpdateWeddingRequest struct {
@@ -65,6 +67,7 @@ type UpdateWeddingRequest struct {
 	WhatsAppNumber *string `json:"whatsapp_number"`
 	Ages           *string `json:"ages"`
 	WelcomeMessage *string `json:"welcome_message"`
+	Template       *string `json:"template,omitempty"`
 }
 
 type PrivacyRequest struct {

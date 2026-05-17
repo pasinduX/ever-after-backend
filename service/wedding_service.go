@@ -90,6 +90,18 @@ func (s *WeddingService) GetBySlug(ctx context.Context, slug string) (*dto.Weddi
 	return dao.FindWeddingBySlug(ctx, s.db, slug)
 }
 
+func (s *WeddingService) GetPublicByID(ctx context.Context, weddingID string) (*dto.Wedding, error) {
+	w, err := dao.FindWeddingByID(ctx, s.db, weddingID)
+	if err != nil {
+		return nil, err
+	}
+	if w.Privacy != dto.PrivacyPublic {
+		return nil, apperrors.ErrForbidden
+	}
+	w.PasswordHash = nil
+	return w, nil
+}
+
 func (s *WeddingService) Update(ctx context.Context, weddingID, ownerID string, req dto.UpdateWeddingRequest) (*dto.Wedding, error) {
 	w, err := s.Get(ctx, weddingID, ownerID)
 	if err != nil {

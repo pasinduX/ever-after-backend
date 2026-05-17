@@ -68,6 +68,19 @@ func NewUploadService(db *mongo.Database, cfg *integrations.Secrets) (*UploadSer
 	return &UploadService{db: db, cfg: cfg, s3: s3Client}, nil
 }
 
+func (s *UploadService) buildFileURL(fileKey string) string {
+	if s.cfg.S3PublicBaseURL != "" {
+		return fmt.Sprintf("%s/%s", strings.TrimRight(s.cfg.S3PublicBaseURL, "/"), fileKey)
+	}
+	if s.cfg.S3Endpoint != "" {
+		return fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.cfg.S3Endpoint, "/"), s.cfg.S3Bucket, fileKey)
+	}
+	if s.cfg.S3Region == "us-east-1" {
+		return fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s.cfg.S3Bucket, fileKey)
+	}
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.cfg.S3Bucket, s.cfg.S3Region, fileKey)
+}
+
 func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
 	mimeType := header.Header.Get("Content-Type")
 	fileType, ok := allowedMimeTypes[mimeType]
@@ -103,7 +116,7 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 
-	fileURL := fmt.Sprintf("%s/%s", s.cfg.S3PublicBaseURL, fileKey)
+	fileURL := s.buildFileURL(fileKey)
 	upload := &dto.Upload{
 		ID:         uuid.NewString(),
 		WeddingID:  weddingID,
@@ -123,6 +136,51 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 	if err := dao.CreateUpload(ctx, s.db, upload); err != nil {
 		return nil, err
 	}
+	return upload, nil
+}
+
+func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, file multipart.File, header *multipart.FileHeader) (*dto.Upload, error) {
+	if s.cfg.S3Bucket == "" {
+		return nil, errors.New("S3 bucket is not configured")
+	}
+
+	mimeType := header.Header.Get("Content-Type")
+	fileType, ok := allowedMimeTypes[mimeType]
+	if !ok {
+		return nil, apperrors.ErrInvalidFile
+	}
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	fileKey := fmt.Sprintf("%s/%s%s", strings.Trim(folderID, "/"), uuid.NewString(), ext)
+
+	_, err := s.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.cfg.S3Bucket),
+		Key:         aws.String(fileKey),
+		Body:        file,
+		ContentType: aws.String(mimeType),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upload to storage: %w", err)
+	}
+
+	fileURL := s.buildFileURL(fileKey)
+	upload := &dto.Upload{
+		ID:         uuid.NewString(),
+		WeddingID:  folderID,
+		FileURL:    fileURL,
+		FileKey:    fileKey,
+		FileType:   fileType,
+		MimeType:   mimeType,
+		SizeBytes:  header.Size,
+		Category:   dto.CategoryOther,
+		IsApproved: true,
+		UploadedAt: time.Now(),
+	}
+
+	if err := dao.CreateUpload(ctx, s.db, upload); err != nil {
+		return nil, err
+	}
+
 	return upload, nil
 }
 

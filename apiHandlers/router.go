@@ -49,8 +49,10 @@ func NewRouter(
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 
-	requireAuth := functions.RequireAuth(cfg.JWTSecret)
 	getUID := functions.GetUserID
+	app.Get("/api/weddings/:id", api.PublicWedding(weddingSvc))
+
+	requireAuth := functions.RequireAuth(cfg.JWTSecret)
 
 	auth := app.Group("/api/auth")
 	auth.Post("/signup", api.SignUp(authSvc))
@@ -72,6 +74,8 @@ func NewRouter(
 	weddings.Delete("/:id/uploads/:uploadId", api.DeleteUpload(uploadSvc))
 	weddings.Get("/:id/album", api.Album(db))
 	weddings.Get("/:id/album/highlights", api.Highlights(db))
+
+	app.Post("/api/uploads", api.UploadToFolder(uploadSvc, cfg.MaxUploadSize))
 	weddings.Get("/:id/album/download", api.Download(db))
 	weddings.Get("/:id/wall", hub.ServeSSE)
 

@@ -55,6 +55,16 @@ func GetWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) string) 
 	}
 }
 
+func PublicWedding(svc *service.WeddingService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		result, err := svc.GetPublicByID(c.UserContext(), c.Params("id"))
+		if err != nil {
+			return weddingServiceError(c, err)
+		}
+		return utils.SendJSON(c, fiber.StatusOK, result)
+	}
+}
+
 func UpdateWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req dto.UpdateWeddingRequest

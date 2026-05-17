@@ -46,6 +46,39 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 	}
 }
 
+func UploadToFolder(svc *service.UploadService, maxSize int64) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		folderID := c.FormValue("id")
+		if folderID == "" {
+			folderID = c.Params("id")
+		}
+		if folderID == "" {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "id required")
+		}
+
+		fileHeader, err := c.FormFile("file")
+		if err != nil {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "file field required")
+		}
+
+		file, err := fileHeader.Open()
+		if err != nil {
+			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to open file")
+		}
+		defer file.Close()
+
+		upload, err := svc.UploadToFolder(c.UserContext(), folderID, file, fileHeader)
+		if errors.Is(err, apperrors.ErrInvalidFile) {
+			return utils.SendErrorResponse(c, fiber.StatusUnsupportedMediaType, err.Error())
+		}
+		if err != nil {
+			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "upload failed")
+		}
+
+		return utils.SendJSON(c, fiber.StatusCreated, upload)
+	}
+}
+
 func ListUploads(svc *service.UploadService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		uploads, err := svc.ListForWedding(c.UserContext(), c.Params("id"))

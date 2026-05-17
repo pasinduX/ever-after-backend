@@ -50,7 +50,7 @@ func Load() (*Secrets, error) {
         Port:                 getEnv("PORT", "8080"),
         Env:                  getEnv("ENV", "development"),
         MongoURL:             requireEnv("MONGO_DB_URL"),
-        MongoDBName:          getEnv("MONGO_DB_NAME", "everafter"),
+        MongoDBName:          getEnv("MONGO_DB_NAME", "MoonVeils"),
         JWTSecret:            requireEnv("JWT_SECRET"),
         JWTAccessTokenTTL:    parseDuration(getEnv("JWT_ACCESS_TTL", "15m")),
         JWTRefreshTokenTTL:   parseDuration(getEnv("JWT_REFRESH_TTL", "720h")),
