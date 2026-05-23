@@ -75,14 +75,16 @@ func NewRouter(
 	weddings.Get("/:id/album", api.Album(db))
 	weddings.Get("/:id/album/highlights", api.Highlights(db))
 
-	app.Post("/api/uploads", api.UploadToFolder(uploadSvc, cfg.MaxUploadSize))
+	app.Post("/api/uploads", api.UploadToFolder(uploadSvc, hub, cfg.MaxUploadSize))
 	weddings.Get("/:id/album/download", api.Download(db))
 	weddings.Get("/:id/wall", hub.ServeSSE)
 
-	guest := app.Group("/api/w/:slug")
+	guest := app.Group("/api/w/:id")
 	guest.Get("/", api.GuestViewWedding(weddingSvc))
 	guest.Post("/access", api.GuestAccessWedding(weddingSvc))
 	guest.Post("/uploads", api.GuestUpload(uploadSvc, hub, cfg.MaxUploadSize))
+	guest.Get("/album", api.Album(db))
+	guest.Get("/album/highlights", api.Highlights(db))
 
 	app.Post("/api/checkout", requireAuth, api.Checkout(paymentSvc, getUID))
 	app.Post("/api/webhooks/stripe", api.StripeWebhook(paymentSvc, cfg))

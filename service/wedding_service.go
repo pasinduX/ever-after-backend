@@ -57,6 +57,7 @@ func (s *WeddingService) Create(ctx context.Context, ownerID string, req dto.Cre
 		WhatsAppNumber: req.WhatsAppNumber,
 		Ages:           req.Ages,
 		WelcomeMessage: req.WelcomeMessage,
+		Template:       req.Template,
 		QRSlug:         slug,
 		QRCodeURL:      qrCodeURL,
 		Tier:           dto.TierElopement,
@@ -102,6 +103,46 @@ func (s *WeddingService) GetPublicByID(ctx context.Context, weddingID string) (*
 	return w, nil
 }
 
+func (s *WeddingService) GetPublicByIdentifier(ctx context.Context, identifier string) (*dto.Wedding, error) {
+	w, err := dao.FindWeddingByID(ctx, s.db, identifier)
+	if err != nil {
+		if !errors.Is(err, dao.ErrNoRows) {
+			return nil, err
+		}
+		w, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if w.Privacy != dto.PrivacyPublic {
+		return nil, apperrors.ErrForbidden
+	}
+	w.PasswordHash = nil
+	return w, nil
+}
+
+func (s *WeddingService) VerifyGuestAccessByIdentifier(ctx context.Context, identifier, password string) (*dto.Wedding, error) {
+	w, err := dao.FindWeddingByID(ctx, s.db, identifier)
+	if err != nil {
+		if !errors.Is(err, dao.ErrNoRows) {
+			return nil, err
+		}
+		w, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if w.Privacy == dto.PrivacyPrivate {
+		return nil, apperrors.ErrForbidden
+	}
+	if w.Privacy == dto.PrivacyPasswordProtected {
+		if w.PasswordHash == nil || !functions.CheckPassword(*w.PasswordHash, password) {
+			return nil, errors.New("incorrect album password")
+		}
+	}
+	return w, nil
+}
+
 func (s *WeddingService) Update(ctx context.Context, weddingID, ownerID string, req dto.UpdateWeddingRequest) (*dto.Wedding, error) {
 	w, err := s.Get(ctx, weddingID, ownerID)
 	if err != nil {
@@ -124,6 +165,9 @@ func (s *WeddingService) Update(ctx context.Context, weddingID, ownerID string, 
 	}
 	if req.WelcomeMessage != nil {
 		w.WelcomeMessage = *req.WelcomeMessage
+	}
+	if req.Template != nil {
+		w.Template = *req.Template
 	}
 	if req.WeddingDate != nil {
 		d, err := time.Parse("2006-01-02", *req.WeddingDate)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -37,6 +38,9 @@ type Secrets struct {
 	S3SecretAccessKey string
 	S3PublicBaseURL   string
 
+	OpenAIAPIKey string
+	OpenAIModel  string
+
 	FrontendURL         string
 	FrontendCORSOrigins string
 	MaxUploadSize       int64
@@ -66,8 +70,10 @@ func Load() (*Secrets, error) {
 		S3AccessKeyID:         getEnv("S3_ACCESS_KEY_ID", getEnv("AWS_ACCESS_KEY_ID", "")),
 		S3SecretAccessKey:     getEnv("S3_SECRET_ACCESS_KEY", getEnv("AWS_SECRET_ACCESS_KEY", "")),
 		S3PublicBaseURL:       getEnv("S3_PUBLIC_BASE_URL", getEnv("AWS_S3_BASE_URL", "")),
+		OpenAIAPIKey:          getEnv("OPENAI_API_KEY", ""),
+		OpenAIModel:           getEnv("OPENAI_MODEL", "gpt-4.1-mini"),
 		FrontendURL:           getEnv("FRONTEND_URL", "http://localhost:3000"),
-		FrontendCORSOrigins:   getEnv("FRONTEND_ORIGINS", getEnv("FRONTEND_URL", "http://localhost:3000")),
+		FrontendCORSOrigins:   mergeOrigins(getEnv("FRONTEND_ORIGINS", ""), getEnv("FRONTEND_URL", "http://localhost:3000")),
 		MaxUploadSize:         parseInt64(getEnv("MAX_UPLOAD_SIZE", "52428800")),
 	}
 	return s, nil
@@ -78,6 +84,32 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func mergeOrigins(primary, secondary string) string {
+	set := make(map[string]struct{})
+	var result []string
+	for _, origin := range strings.Split(primary, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if _, ok := set[origin]; !ok {
+			set[origin] = struct{}{}
+			result = append(result, origin)
+		}
+	}
+	for _, origin := range strings.Split(secondary, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if _, ok := set[origin]; !ok {
+			set[origin] = struct{}{}
+			result = append(result, origin)
+		}
+	}
+	return strings.Join(result, ",")
 }
 
 func requireEnv(key string) string {

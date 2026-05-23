@@ -39,7 +39,18 @@ func main() {
 
 	authSvc := service.NewAuthService(db, cfg)
 	weddingSvc := service.NewWeddingService(db, cfg)
-	uploadSvc, err := service.NewUploadService(db, cfg)
+	s3Client, err := service.NewS3Client(cfg)
+	if err != nil {
+		slog.Error("failed to init s3 client", "error", err)
+		os.Exit(1)
+	}
+	analysisSvc, err := service.NewAnalysisService(db, cfg, s3Client)
+	if err != nil {
+		slog.Error("failed to init analysis service", "error", err)
+		os.Exit(1)
+	}
+	analysisSvc.Start()
+	uploadSvc, err := service.NewUploadService(db, cfg, s3Client, analysisSvc)
 	if err != nil {
 		slog.Error("failed to init upload service", "error", err)
 		os.Exit(1)

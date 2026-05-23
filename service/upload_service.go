@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/storyvows/backend/dao"
@@ -26,46 +24,22 @@ var allowedMimeTypes = map[string]dto.FileType{
 	"image/png":       dto.FileTypePhoto,
 	"image/webp":      dto.FileTypePhoto,
 	"image/heic":      dto.FileTypePhoto,
+	"image/heif":      dto.FileTypePhoto,
+	"image/avif":      dto.FileTypePhoto,
 	"video/mp4":       dto.FileTypeVideo,
 	"video/mov":       dto.FileTypeVideo,
 	"video/quicktime": dto.FileTypeVideo,
 }
 
 type UploadService struct {
-	db  *mongo.Database
-	cfg *integrations.Secrets
-	s3  *s3.Client
+	db       *mongo.Database
+	cfg      *integrations.Secrets
+	s3       *s3.Client
+	analysis *AnalysisService
 }
 
-func NewUploadService(db *mongo.Database, cfg *integrations.Secrets) (*UploadService, error) {
-	var s3Client *s3.Client
-	if cfg.S3Endpoint != "" {
-		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(cfg.S3Region),
-			awsconfig.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, ""),
-			),
-		)
-		if err != nil {
-			return nil, err
-		}
-		s3Client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(cfg.S3Endpoint)
-			o.UsePathStyle = true
-		})
-	} else {
-		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(cfg.S3Region),
-			awsconfig.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, ""),
-			),
-		)
-		if err != nil {
-			return nil, err
-		}
-		s3Client = s3.NewFromConfig(awsCfg)
-	}
-	return &UploadService{db: db, cfg: cfg, s3: s3Client}, nil
+func NewUploadService(db *mongo.Database, cfg *integrations.Secrets, s3Client *s3.Client, analysis *AnalysisService) (*UploadService, error) {
+	return &UploadService{db: db, cfg: cfg, s3: s3Client, analysis: analysis}, nil
 }
 
 func (s *UploadService) buildFileURL(fileKey string) string {
@@ -118,16 +92,49 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 
 	fileURL := s.buildFileURL(fileKey)
 	upload := &dto.Upload{
-		ID:         uuid.NewString(),
-		WeddingID:  weddingID,
-		FileURL:    fileURL,
-		FileKey:    fileKey,
-		FileType:   fileType,
-		MimeType:   mimeType,
-		SizeBytes:  header.Size,
-		Category:   dto.CategoryOther,
-		IsApproved: true,
-		UploadedAt: time.Now(),
+		ID:             uuid.NewString(),
+		WeddingID:      weddingID,
+		FileURL:        fileURL,
+		FileKey:        fileKey,
+		FileType:       fileType,
+		MimeType:       mimeType,
+		SizeBytes:      header.Size,
+		Category:       dto.CategoryOther,
+		AnalysisStatus: dto.AnalysisStatusPending,
+		QualityScore:   nil,
+		DetectedFaces:  nil,
+		Orientation:    nil,
+		SceneTags:      nil,
+		AnalysisError:  nil,
+		AIInsights:     nil,
+		IsApproved:     true,
+		UploadedAt:     time.Now(),
+		Storage: dto.UploadStorage{
+			OriginalURL:  fileURL,
+			MediumURL:    fileURL,
+			ThumbnailURL: fileURL,
+			FileKey:      fileKey,
+		},
+		Metadata: dto.UploadMetadata{
+			MimeType:  mimeType,
+			SizeBytes: header.Size,
+		},
+		Timeline: dto.UploadTimeline{
+			UploadedAt: time.Now(),
+		},
+		Analysis: dto.UploadAnalysis{
+			Status:   dto.AnalysisStatusPending,
+			Category: dto.CategoryOther,
+			Processing: dto.ProcessingStages{
+				Thumbnail:      dto.AnalysisStatusPending,
+				AIAnalysis:     dto.AnalysisStatusPending,
+				Moderation:     dto.AnalysisStatusPending,
+				DuplicateCheck: dto.AnalysisStatusPending,
+			},
+		},
+		Moderation: dto.UploadModeration{
+			IsApproved: true,
+		},
 	}
 	if guestName != "" {
 		upload.GuestName = &guestName
@@ -136,7 +143,34 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 	if err := dao.CreateUpload(ctx, s.db, upload); err != nil {
 		return nil, err
 	}
+	if s.analysis != nil {
+		s.analysis.Enqueue(upload.ID)
+	}
 	return upload, nil
+}
+
+func (s *UploadService) GuestUploadBySlug(ctx context.Context, slug string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
+	wedding, err := dao.FindWeddingBySlug(ctx, s.db, slug)
+	if errors.Is(err, dao.ErrNoRows) {
+		return nil, errors.New("wedding not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.GuestUpload(ctx, wedding.ID, file, header, guestName)
+}
+
+func (s *UploadService) GuestUploadByIdentifier(ctx context.Context, identifier string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
+	wedding, err := dao.FindWeddingByID(ctx, s.db, identifier)
+	if errors.Is(err, dao.ErrNoRows) {
+		wedding, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
+		if err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	return s.GuestUpload(ctx, wedding.ID, file, header, guestName)
 }
 
 func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, file multipart.File, header *multipart.FileHeader) (*dto.Upload, error) {
@@ -165,20 +199,56 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 
 	fileURL := s.buildFileURL(fileKey)
 	upload := &dto.Upload{
-		ID:         uuid.NewString(),
-		WeddingID:  folderID,
-		FileURL:    fileURL,
-		FileKey:    fileKey,
-		FileType:   fileType,
-		MimeType:   mimeType,
-		SizeBytes:  header.Size,
-		Category:   dto.CategoryOther,
-		IsApproved: true,
-		UploadedAt: time.Now(),
+		ID:             uuid.NewString(),
+		WeddingID:      folderID,
+		FileURL:        fileURL,
+		FileKey:        fileKey,
+		FileType:       fileType,
+		MimeType:       mimeType,
+		SizeBytes:      header.Size,
+		Category:       dto.CategoryOther,
+		AnalysisStatus: dto.AnalysisStatusPending,
+		QualityScore:   nil,
+		DetectedFaces:  nil,
+		Orientation:    nil,
+		SceneTags:      nil,
+		AnalysisError:  nil,
+		AIInsights:     nil,
+		IsApproved:     true,
+		UploadedAt:     time.Now(),
+		Storage: dto.UploadStorage{
+			OriginalURL:  fileURL,
+			MediumURL:    fileURL,
+			ThumbnailURL: fileURL,
+			FileKey:      fileKey,
+		},
+		Metadata: dto.UploadMetadata{
+			MimeType:  mimeType,
+			SizeBytes: header.Size,
+		},
+		Timeline: dto.UploadTimeline{
+			UploadedAt: time.Now(),
+		},
+		Analysis: dto.UploadAnalysis{
+			Status:   dto.AnalysisStatusPending,
+			Category: dto.CategoryOther,
+			Processing: dto.ProcessingStages{
+				Thumbnail:      dto.AnalysisStatusPending,
+				AIAnalysis:     dto.AnalysisStatusPending,
+				Moderation:     dto.AnalysisStatusPending,
+				DuplicateCheck: dto.AnalysisStatusPending,
+			},
+		},
+		Moderation: dto.UploadModeration{
+			IsApproved: true,
+		},
 	}
 
 	if err := dao.CreateUpload(ctx, s.db, upload); err != nil {
 		return nil, err
+	}
+	if s.analysis != nil {
+		s.analysis.Enqueue(upload.ID)
 	}
 
 	return upload, nil

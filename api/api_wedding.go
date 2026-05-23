@@ -103,7 +103,7 @@ func SetPrivacyWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) s
 
 func GuestViewWedding(svc *service.WeddingService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		result, err := svc.GetBySlug(c.UserContext(), c.Params("slug"))
+		result, err := svc.GetPublicByIdentifier(c.UserContext(), c.Params("id"))
 		if err != nil {
 			return weddingServiceError(c, err)
 		}
@@ -118,7 +118,7 @@ func GuestAccessWedding(svc *service.WeddingService) fiber.Handler {
 		if err := c.BodyParser(&req); err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 		}
-		result, err := svc.VerifyGuestAccess(c.UserContext(), c.Params("slug"), req.Password)
+		result, err := svc.VerifyGuestAccessByIdentifier(c.UserContext(), c.Params("id"), req.Password)
 		if err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusUnauthorized, err.Error())
 		}

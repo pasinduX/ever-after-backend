@@ -13,9 +13,9 @@ import (
 
 func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		weddingID := c.FormValue("wedding_id")
-		if weddingID == "" {
-			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "wedding_id required")
+		identifier := c.Params("id")
+		if identifier == "" {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "identifier required")
 		}
 		guestName := c.FormValue("guest_name")
 
@@ -30,7 +30,7 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 		}
 		defer file.Close()
 
-		upload, err := svc.GuestUpload(c.UserContext(), weddingID, file, fileHeader, guestName)
+		upload, err := svc.GuestUploadByIdentifier(c.UserContext(), identifier, file, fileHeader, guestName)
 		if errors.Is(err, apperrors.ErrLimitReached) {
 			return utils.SendErrorResponse(c, fiber.StatusPaymentRequired, err.Error())
 		}
@@ -41,19 +41,22 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "upload failed")
 		}
 
-		hub.Broadcast(weddingID, upload)
+		hub.Broadcast(upload.WeddingID, upload)
 		return utils.SendJSON(c, fiber.StatusCreated, upload)
 	}
 }
 
-func UploadToFolder(svc *service.UploadService, maxSize int64) fiber.Handler {
+func UploadToFolder(svc *service.UploadService, hub *realtime.Hub, maxSize int64) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		folderID := c.FormValue("id")
-		if folderID == "" {
-			folderID = c.Params("id")
+		weddingID := c.FormValue("wedding_id")
+		if weddingID == "" {
+			weddingID = c.FormValue("id")
 		}
-		if folderID == "" {
-			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "id required")
+		if weddingID == "" {
+			weddingID = c.Params("id")
+		}
+		if weddingID == "" {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "wedding_id required")
 		}
 
 		fileHeader, err := c.FormFile("file")
@@ -67,7 +70,11 @@ func UploadToFolder(svc *service.UploadService, maxSize int64) fiber.Handler {
 		}
 		defer file.Close()
 
-		upload, err := svc.UploadToFolder(c.UserContext(), folderID, file, fileHeader)
+		guestName := c.FormValue("guest_name")
+		upload, err := svc.GuestUpload(c.UserContext(), weddingID, file, fileHeader, guestName)
+		if errors.Is(err, apperrors.ErrLimitReached) {
+			return utils.SendErrorResponse(c, fiber.StatusPaymentRequired, err.Error())
+		}
 		if errors.Is(err, apperrors.ErrInvalidFile) {
 			return utils.SendErrorResponse(c, fiber.StatusUnsupportedMediaType, err.Error())
 		}
@@ -75,6 +82,9 @@ func UploadToFolder(svc *service.UploadService, maxSize int64) fiber.Handler {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "upload failed")
 		}
 
+		if hub != nil {
+			hub.Broadcast(upload.WeddingID, upload)
+		}
 		return utils.SendJSON(c, fiber.StatusCreated, upload)
 	}
 }
