@@ -1,11 +1,8 @@
 package api
 
 import (
-	"errors"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/storyvows/backend/dto"
-	appErrors "github.com/storyvows/backend/errors"
 	"github.com/storyvows/backend/service"
 	"github.com/storyvows/backend/utils"
 )
@@ -17,10 +14,7 @@ func SignUp(svc *service.AuthService) fiber.Handler {
 			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 		}
 		if err := svc.SignUp(c.UserContext(), req); err != nil {
-			if errors.Is(err, appErrors.ErrEmailTaken) {
-				return utils.SendErrorResponse(c, fiber.StatusConflict, "email already in use")
-			}
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to create account")
+			return utils.SendServiceError(c, err)
 		}
 		return utils.SendSuccessResponse(c, "verification code sent to email", nil)
 	}
@@ -34,10 +28,7 @@ func VerifyEmail(svc *service.AuthService) fiber.Handler {
 		}
 		resp, err := svc.VerifyEmail(c.UserContext(), req.Email, req.Code)
 		if err != nil {
-			if errors.Is(err, appErrors.ErrInvalidVerificationCode) {
-				return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid or expired verification code")
-			}
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to verify email")
+			return utils.SendServiceError(c, err)
 		}
 		return utils.SendJSON(c, fiber.StatusOK, resp)
 	}
@@ -51,13 +42,7 @@ func SignIn(svc *service.AuthService) fiber.Handler {
 		}
 		resp, err := svc.SignIn(c.UserContext(), req)
 		if err != nil {
-			if errors.Is(err, appErrors.ErrInvalidCreds) {
-				return utils.SendErrorResponse(c, fiber.StatusUnauthorized, "invalid email or password")
-			}
-			if errors.Is(err, appErrors.ErrEmailNotVerified) {
-				return utils.SendErrorResponse(c, fiber.StatusUnauthorized, "email not verified")
-			}
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to sign in")
+			return utils.SendServiceError(c, err)
 		}
 		return utils.SendJSON(c, fiber.StatusOK, resp)
 	}
@@ -71,10 +56,7 @@ func Refresh(svc *service.AuthService) fiber.Handler {
 		}
 		resp, err := svc.RefreshTokens(c.UserContext(), req.RefreshToken)
 		if err != nil {
-			if errors.Is(err, appErrors.ErrInvalidToken) {
-				return utils.SendErrorResponse(c, fiber.StatusUnauthorized, "invalid or expired refresh token")
-			}
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to refresh tokens")
+			return utils.SendServiceError(c, err)
 		}
 		return utils.SendJSON(c, fiber.StatusOK, resp)
 	}

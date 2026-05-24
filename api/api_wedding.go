@@ -1,24 +1,14 @@
 package api
 
 import (
-	"errors"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/storyvows/backend/dto"
-	apperrors "github.com/storyvows/backend/errors"
 	"github.com/storyvows/backend/service"
 	"github.com/storyvows/backend/utils"
 )
 
 func weddingServiceError(c *fiber.Ctx, err error) error {
-	switch {
-	case errors.Is(err, apperrors.ErrWeddingNotFound):
-		return utils.SendErrorResponse(c, fiber.StatusNotFound, err.Error())
-	case errors.Is(err, apperrors.ErrForbidden):
-		return utils.SendErrorResponse(c, fiber.StatusForbidden, err.Error())
-	default:
-		return utils.SendErrorResponse(c, fiber.StatusInternalServerError, err.Error())
-	}
+	return utils.SendServiceError(c, err)
 }
 
 func CreateWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) string) fiber.Handler {

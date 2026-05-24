@@ -64,7 +64,7 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 
 	wedding, err := dao.FindWeddingByID(ctx, s.db, weddingID)
 	if errors.Is(err, dao.ErrNoRows) {
-		return nil, errors.New("wedding not found")
+		return nil, apperrors.ErrWeddingNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -164,6 +164,9 @@ func (s *UploadService) GuestUploadByIdentifier(ctx context.Context, identifier 
 	wedding, err := dao.FindWeddingByID(ctx, s.db, identifier)
 	if errors.Is(err, dao.ErrNoRows) {
 		wedding, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
+		if errors.Is(err, dao.ErrNoRows) {
+			return nil, apperrors.ErrWeddingNotFound
+		}
 		if err != nil {
 			return nil, err
 		}

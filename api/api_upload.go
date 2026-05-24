@@ -1,11 +1,10 @@
 package api
 
 import (
-	"errors"
+	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/storyvows/backend/dto"
-	apperrors "github.com/storyvows/backend/errors"
 	"github.com/storyvows/backend/realtime"
 	"github.com/storyvows/backend/service"
 	"github.com/storyvows/backend/utils"
@@ -31,14 +30,9 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 		defer file.Close()
 
 		upload, err := svc.GuestUploadByIdentifier(c.UserContext(), identifier, file, fileHeader, guestName)
-		if errors.Is(err, apperrors.ErrLimitReached) {
-			return utils.SendErrorResponse(c, fiber.StatusPaymentRequired, err.Error())
-		}
-		if errors.Is(err, apperrors.ErrInvalidFile) {
-			return utils.SendErrorResponse(c, fiber.StatusUnsupportedMediaType, err.Error())
-		}
 		if err != nil {
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "upload failed")
+			slog.Error("guest upload failed", "error", err.Error(), "wedding_id", identifier)
+			return utils.SendServiceError(c, err)
 		}
 
 		hub.Broadcast(upload.WeddingID, upload)
@@ -72,14 +66,9 @@ func UploadToFolder(svc *service.UploadService, hub *realtime.Hub, maxSize int64
 
 		guestName := c.FormValue("guest_name")
 		upload, err := svc.GuestUpload(c.UserContext(), weddingID, file, fileHeader, guestName)
-		if errors.Is(err, apperrors.ErrLimitReached) {
-			return utils.SendErrorResponse(c, fiber.StatusPaymentRequired, err.Error())
-		}
-		if errors.Is(err, apperrors.ErrInvalidFile) {
-			return utils.SendErrorResponse(c, fiber.StatusUnsupportedMediaType, err.Error())
-		}
 		if err != nil {
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "upload failed")
+			slog.Error("upload to folder failed", "error", err.Error(), "wedding_id", weddingID)
+			return utils.SendServiceError(c, err)
 		}
 
 		if hub != nil {
