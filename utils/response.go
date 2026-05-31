@@ -43,6 +43,12 @@ func SendServiceError(c *fiber.Ctx, err error) error {
 		return SendErrorResponse(c, fiber.StatusBadRequest, "invalid or expired verification code")
 	case errors.Is(err, apperrors.ErrUploadNotFound):
 		return SendErrorResponse(c, fiber.StatusNotFound, "upload not found")
+	case errors.Is(err, apperrors.ErrInviteNotFound):
+		return SendErrorResponse(c, fiber.StatusNotFound, "invite not found")
+	case errors.Is(err, apperrors.ErrThankYouNotFound):
+		return SendErrorResponse(c, fiber.StatusNotFound, "thank you config not found")
+	case errors.Is(err, apperrors.ErrGuestNotFound):
+		return SendErrorResponse(c, fiber.StatusNotFound, "guest not found")
 	case errors.Is(err, apperrors.ErrInvalidTier):
 		return SendErrorResponse(c, fiber.StatusBadRequest, "invalid tier")
 	default:

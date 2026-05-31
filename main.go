@@ -39,6 +39,8 @@ func main() {
 
 	authSvc := service.NewAuthService(db, cfg)
 	weddingSvc := service.NewWeddingService(db, cfg)
+	guestSvc := service.NewGuestService(db)
+	whatsappSvc := service.NewWhatsAppService(cfg)
 	s3Client, err := service.NewS3Client(cfg)
 	if err != nil {
 		slog.Error("failed to init s3 client", "error", err)
@@ -50,6 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 	analysisSvc.Start()
+	cardsSvc := service.NewCardsService(db, analysisSvc)
 	uploadSvc, err := service.NewUploadService(db, cfg, s3Client, analysisSvc)
 	if err != nil {
 		slog.Error("failed to init upload service", "error", err)
@@ -58,7 +61,7 @@ func main() {
 	paymentSvc := service.NewPaymentService(db, cfg)
 	hub := realtime.NewHub()
 
-	app := apiHandlers.NewRouter(cfg, db, authSvc, weddingSvc, uploadSvc, paymentSvc, hub)
+	app := apiHandlers.NewRouter(cfg, db, authSvc, weddingSvc, guestSvc, whatsappSvc, cardsSvc, uploadSvc, paymentSvc, hub)
 
 	slog.Info("starting server", "port", cfg.Port, "env", cfg.Env)
 	go func() {

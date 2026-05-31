@@ -1,6 +1,8 @@
 package api
 
 import (
+	"log/slog"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/storyvows/backend/dto"
 	"github.com/storyvows/backend/service"
@@ -11,7 +13,7 @@ func weddingServiceError(c *fiber.Ctx, err error) error {
 	return utils.SendServiceError(c, err)
 }
 
-func CreateWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) string) fiber.Handler {
+func CreateWedding(svc *service.WeddingService, cardsSvc *service.CardsService, getUserID func(*fiber.Ctx) string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req dto.CreateWeddingRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -21,6 +23,16 @@ func CreateWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) strin
 		if err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusBadRequest, err.Error())
 		}
+
+		if cardsSvc != nil {
+			if _, err := cardsSvc.GenerateInvite(c.UserContext(), getUserID(c), result.ID); err != nil {
+				slog.Error("failed to generate invite config", "error", err, "wedding_id", result.ID)
+			}
+			if _, err := cardsSvc.GenerateThankYou(c.UserContext(), getUserID(c), result.ID); err != nil {
+				slog.Error("failed to generate thank you config", "error", err, "wedding_id", result.ID)
+			}
+		}
+
 		return utils.SendJSON(c, fiber.StatusCreated, result)
 	}
 }

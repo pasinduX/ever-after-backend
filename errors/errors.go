@@ -25,6 +25,17 @@ var (
 	ErrInvalidFile    = errors.New("invalid file type")
 )
 
+// Guest domain errors
+var (
+	ErrGuestNotFound = errors.New("guest not found")
+)
+
+// Cards domain errors
+var (
+	ErrInviteNotFound   = errors.New("invite not found")
+	ErrThankYouNotFound = errors.New("thank you config not found")
+)
+
 // Order domain errors
 var (
 	ErrInvalidTier = errors.New("invalid tier")

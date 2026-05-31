@@ -32,27 +32,39 @@ var allowedMimeTypes = map[string]dto.FileType{
 }
 
 type UploadService struct {
-	db       *mongo.Database
-	cfg      *integrations.Secrets
-	s3       *s3.Client
-	analysis *AnalysisService
+	db        *mongo.Database
+	cfg       *integrations.Secrets
+	s3        *s3.Client
+	presigner *s3.PresignClient
+	analysis  *AnalysisService
 }
 
 func NewUploadService(db *mongo.Database, cfg *integrations.Secrets, s3Client *s3.Client, analysis *AnalysisService) (*UploadService, error) {
-	return &UploadService{db: db, cfg: cfg, s3: s3Client, analysis: analysis}, nil
+	presigner := s3.NewPresignClient(s3Client)
+	return &UploadService{db: db, cfg: cfg, s3: s3Client, presigner: presigner, analysis: analysis}, nil
 }
 
-func (s *UploadService) buildFileURL(fileKey string) string {
+func (s *UploadService) buildFileURL(fileKey string) (string, error) {
 	if s.cfg.S3PublicBaseURL != "" {
-		return fmt.Sprintf("%s/%s", strings.TrimRight(s.cfg.S3PublicBaseURL, "/"), fileKey)
+		return fmt.Sprintf("%s/%s", strings.TrimRight(s.cfg.S3PublicBaseURL, "/"), fileKey), nil
 	}
-	if s.cfg.S3Endpoint != "" {
-		return fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.cfg.S3Endpoint, "/"), s.cfg.S3Bucket, fileKey)
+	if s.s3 == nil || s.presigner == nil {
+		return "", errors.New("s3 client is not initialized")
 	}
-	if s.cfg.S3Region == "us-east-1" {
-		return fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s.cfg.S3Bucket, fileKey)
+	if s.cfg.S3Bucket == "" {
+		return "", errors.New("s3 bucket is not configured")
 	}
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.cfg.S3Bucket, s.cfg.S3Region, fileKey)
+
+	req, err := s.presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(s.cfg.S3Bucket),
+		Key:    aws.String(fileKey),
+	}, func(po *s3.PresignOptions) {
+		po.Expires = s.cfg.S3PresignTTL
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create presigned url: %w", err)
+	}
+	return req.URL, nil
 }
 
 func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
@@ -90,7 +102,10 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 
-	fileURL := s.buildFileURL(fileKey)
+	fileURL, err := s.buildFileURL(fileKey)
+	if err != nil {
+		return nil, err
+	}
 	upload := &dto.Upload{
 		ID:             uuid.NewString(),
 		WeddingID:      weddingID,
@@ -200,7 +215,10 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 
-	fileURL := s.buildFileURL(fileKey)
+	fileURL, err := s.buildFileURL(fileKey)
+	if err != nil {
+		return nil, err
+	}
 	upload := &dto.Upload{
 		ID:             uuid.NewString(),
 		WeddingID:      folderID,

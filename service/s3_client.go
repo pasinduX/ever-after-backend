@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -11,12 +12,22 @@ import (
 )
 
 func NewS3Client(cfg *integrations.Secrets) (*s3.Client, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+	loadOptions := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.S3Region),
-		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, ""),
-		),
-	)
+	}
+
+	if cfg.S3AccessKeyID != "" || cfg.S3SecretAccessKey != "" {
+		if cfg.S3AccessKeyID == "" || cfg.S3SecretAccessKey == "" {
+			return nil, fmt.Errorf("S3 credentials are incomplete: both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required")
+		}
+		loadOptions = append(loadOptions,
+			awsconfig.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, ""),
+			),
+		)
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), loadOptions...)
 	if err != nil {
 		return nil, err
 	}

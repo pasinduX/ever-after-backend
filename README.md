@@ -133,6 +133,134 @@ Server starts on `http://localhost:8080`
 | POST | `/api/checkout` | Create Stripe Checkout session (POST body: `{wedding_id, tier}`) |
 | POST | `/api/webhooks/stripe` | Stripe webhook handler (no auth, signature verified) |
 
+## Example cURL Requests
+
+### Authentication
+
+```bash
+# Signup
+curl -X POST "http://localhost:8080/api/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"couple@example.com","password":"secure_password","full_name":"Julian & Sofia"}'
+
+# Signin
+curl -X POST "http://localhost:8080/api/auth/signin" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"couple@example.com","password":"secure_password"}'
+
+# Refresh token
+curl -X POST "http://localhost:8080/api/auth/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<REFRESH_TOKEN>"}'
+```
+
+### Weddings
+
+```bash
+# Create wedding
+curl -X POST "http://localhost:8080/api/weddings" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"couple_names":["Julian","Sofia"],"wedding_date":"2026-12-01","wedding_time":"18:30","venue":"The Willow House","address":"123 Meadow Lane","whatsapp_number":"+1234567890","ages":[25,27],"welcome_message":"Welcome!","template":"ivory-symphony","lighting":"Golden Hour Sunset","story_style":"Cinematic Movie","ceremony_style":"Kandyan (Sri Lankan)","venue_type":"Outdoor Garden","wedding_mood":"Romantic","wedding_theme":"Garden Wedding"}'
+
+# Get wedding
+curl -X GET "http://localhost:8080/api/weddings/<WEDDING_ID>" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Update wedding
+curl -X PATCH "http://localhost:8080/api/weddings/<WEDDING_ID>" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"venue":"The Garden Venue","welcome_message":"See you soon!"}'
+
+# Delete wedding
+curl -X DELETE "http://localhost:8080/api/weddings/<WEDDING_ID>" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+### Generic Uploader (no wedding required)
+
+```bash
+# Upload file to a generic folder
+curl -X POST "http://localhost:8080/api/uploads" \
+  -F "folder_id=guest-uploads" \
+  -F "file=@/path/to/photo.jpg"
+
+# Upload file to default uploads folder
+curl -X POST "http://localhost:8080/api/uploads" \
+  -F "file=@/path/to/video.mp4"
+```
+
+### Invite Config CRUD
+
+```bash
+# Create invite config
+curl -X POST "http://localhost:8080/api/weddings/<WEDDING_ID>/invite" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"couple":"Julian & Sofia","hashtag":"#JVWedding","intro":{"lines":["Welcome","Join us"],"tagline":"Celebrate with us","bg_image":"https://example.com/bg.jpg"},"story":{"title":"Our Story","events":[{"year":"2020","text":"We met"}]},"details":{"date":"2026-12-01","time":"5pm","venue":"The Willow House","address":"123 Meadow Lane","dress":"Formal"},"countdown":{"target_iso":"2026-12-01T17:00:00Z","label":"Big day"},"qr":{"title":"RSVP","subtitle":"Scan me","url":"https://example.com/rsvp"},"outro":{"line":"See you there","signature":"Julian & Sofia"}}'
+
+# Get invite config
+curl -X GET "http://localhost:8080/api/weddings/<WEDDING_ID>/invite" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Update invite config
+curl -X PATCH "http://localhost:8080/api/weddings/<WEDDING_ID>/invite" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"hashtag":"#JulianSofia2026"}'
+
+# Delete invite config
+curl -X DELETE "http://localhost:8080/api/weddings/<WEDDING_ID>/invite" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+### Thank You Config CRUD
+
+```bash
+# Create thank you config
+curl -X POST "http://localhost:8080/api/weddings/<WEDDING_ID>/thankyou" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"template":"ivory-symphony","couple":"Julian & Sofia","date":"2026-12-01","venue":"The Willow House","hashtag":"#JVWedding","hero_image":"https://example.com/hero.jpg","portrait":"https://example.com/portrait.jpg","intro":["Thank you for celebrating with us","Your presence meant everything"],"message":"We are grateful for your love and support.","signature":"Julian & Sofia","gallery":["https://example.com/1.jpg","https://example.com/2.jpg"],"closing":"With love"}'
+
+# Get thank you config
+curl -X GET "http://localhost:8080/api/weddings/<WEDDING_ID>/thankyou" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Update thank you config
+curl -X PATCH "http://localhost:8080/api/weddings/<WEDDING_ID>/thankyou" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Thank you for sharing our special day."}'
+
+# Delete thank you config
+curl -X DELETE "http://localhost:8080/api/weddings/<WEDDING_ID>/thankyou" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+### WhatsApp Messaging
+
+```bash
+# Send plain text via Twilio or Meta, depending on config
+curl -X POST "http://localhost:8080/api/whatsapp/send" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number":"+94703842557","message":"Hello from Story Vows!"}'
+
+# Explicit Twilio plain-text send
+curl -X POST "http://localhost:8080/api/whatsapp/send-twilio" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number":"+94703842557","message":"Hello from Story Vows!"}'
+
+# Send Twilio WhatsApp template message
+curl -X POST "http://localhost:8080/api/whatsapp/send-template" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number":"+94703842557","content_sid":"HXb5b62575e6e4ff6129ad7c8efe1f983e","content_variables":{"1":"12/1","2":"3pm"}}'
+```
+
 ## Tier Pricing
 
 One-time purchases (no subscriptions):

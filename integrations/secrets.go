@@ -31,12 +31,22 @@ type Secrets struct {
 	SendGridFromEmail     string
 	SendGridDataResidency string
 
+	TwilioAccountSID   string
+	TwilioAuthToken    string
+	TwilioWhatsAppFrom string
+
+	WhatsAppPhoneNumberID string
+	WhatsAppAccessToken   string
+	WhatsAppAPIVersion    string
+	WhatsAppAPIURL        string
+
 	S3Endpoint        string
 	S3Bucket          string
 	S3Region          string
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3PublicBaseURL   string
+	S3PresignTTL      time.Duration
 
 	OpenAIAPIKey string
 	OpenAIModel  string
@@ -64,12 +74,20 @@ func Load() (*Secrets, error) {
 		SendGridAPIKey:        requireEnv("SENDGRID_API_KEY"),
 		SendGridFromEmail:     requireEnv("SENDGRID_FROM_EMAIL"),
 		SendGridDataResidency: getEnv("SENDGRID_DATA_RESIDENCY", ""),
+		TwilioAccountSID:      getEnv("TWILIO_ACCOUNT_SID", ""),
+		TwilioAuthToken:       getEnv("TWILIO_AUTH_TOKEN", ""),
+		TwilioWhatsAppFrom:    getEnv("TWILIO_WHATSAPP_FROM", ""),
+		WhatsAppPhoneNumberID: getEnv("WHATSAPP_PHONE_NUMBER_ID", ""),
+		WhatsAppAccessToken:   getEnv("WHATSAPP_ACCESS_TOKEN", ""),
+		WhatsAppAPIVersion:    getEnv("WHATSAPP_API_VERSION", "v18.0"),
+		WhatsAppAPIURL:        getEnv("WHATSAPP_API_URL", "https://graph.facebook.com"),
 		S3Endpoint:            getEnv("S3_ENDPOINT", getEnv("AWS_S3_ENDPOINT", "")),
 		S3Bucket:              getEnv("S3_BUCKET", getEnv("AWS_S3_BUCKET", "")),
 		S3Region:              getEnv("S3_REGION", getEnv("AWS_REGION", "auto")),
 		S3AccessKeyID:         getEnv("S3_ACCESS_KEY_ID", getEnv("AWS_ACCESS_KEY_ID", "")),
 		S3SecretAccessKey:     getEnv("S3_SECRET_ACCESS_KEY", getEnv("AWS_SECRET_ACCESS_KEY", "")),
 		S3PublicBaseURL:       getEnv("S3_PUBLIC_BASE_URL", getEnv("AWS_S3_BASE_URL", "")),
+		S3PresignTTL:          parseDuration(getEnv("S3_PRESIGN_TTL", "15m")),
 		OpenAIAPIKey:          getEnv("OPENAI_API_KEY", ""),
 		OpenAIModel:           getEnv("OPENAI_MODEL", "gpt-4.1-mini"),
 		FrontendURL:           getEnv("FRONTEND_URL", "http://localhost:3000"),

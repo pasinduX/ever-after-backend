@@ -145,7 +145,7 @@ func buildAlbumResponse(wedding *dto.Wedding, uploads []*dto.Upload) AlbumRespon
 	}
 
 	hero := AlbumHero{
-		Title:        wedding.CoupleNames,
+		Title:        joinCoupleNames([]string(wedding.CoupleNames)),
 		Quote:        "Some memories deserve forever.",
 		CoverMediaID: "",
 	}
@@ -185,8 +185,8 @@ func buildAlbumResponse(wedding *dto.Wedding, uploads []*dto.Upload) AlbumRespon
 	return AlbumResponse{
 		Album: AlbumMeta{
 			ID:          wedding.ID,
-			Title:       wedding.CoupleNames,
-			CoupleNames: splitCoupleNames(wedding.CoupleNames),
+			Title:       joinCoupleNames([]string(wedding.CoupleNames)),
+			CoupleNames: []string(wedding.CoupleNames),
 		},
 		Hero:              hero,
 		Sections:          sections,
@@ -310,6 +310,13 @@ func assetURL(urls ...string) string {
 		}
 	}
 	return ""
+}
+
+func joinCoupleNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.Join(names, " & ")
 }
 
 func splitCoupleNames(names string) []string {

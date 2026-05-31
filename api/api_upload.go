@@ -42,15 +42,15 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 
 func UploadToFolder(svc *service.UploadService, hub *realtime.Hub, maxSize int64) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		weddingID := c.FormValue("wedding_id")
-		if weddingID == "" {
-			weddingID = c.FormValue("id")
+		folderID := c.FormValue("folder_id")
+		if folderID == "" {
+			folderID = c.FormValue("id")
 		}
-		if weddingID == "" {
-			weddingID = c.Params("id")
+		if folderID == "" {
+			folderID = c.Params("id")
 		}
-		if weddingID == "" {
-			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "wedding_id required")
+		if folderID == "" {
+			folderID = "uploads"
 		}
 
 		fileHeader, err := c.FormFile("file")
@@ -64,10 +64,9 @@ func UploadToFolder(svc *service.UploadService, hub *realtime.Hub, maxSize int64
 		}
 		defer file.Close()
 
-		guestName := c.FormValue("guest_name")
-		upload, err := svc.GuestUpload(c.UserContext(), weddingID, file, fileHeader, guestName)
+		upload, err := svc.UploadToFolder(c.UserContext(), folderID, file, fileHeader)
 		if err != nil {
-			slog.Error("upload to folder failed", "error", err.Error(), "wedding_id", weddingID)
+			slog.Error("upload to folder failed", "error", err.Error(), "folder_id", folderID)
 			return utils.SendServiceError(c, err)
 		}
 

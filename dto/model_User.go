@@ -37,6 +37,17 @@ type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+type SendWhatsAppRequest struct {
+	PhoneNumber string `json:"phone_number"`
+	Message     string `json:"message"`
+}
+
+type SendWhatsAppTemplateRequest struct {
+	PhoneNumber      string            `json:"phone_number"`
+	ContentSid       string            `json:"content_sid"`
+	ContentVariables map[string]string `json:"content_variables"`
+}
+
 type VerifyEmailRequest struct {
 	Email string `json:"email"`
 	Code  string `json:"code"`

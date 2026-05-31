@@ -25,7 +25,7 @@ func NewWeddingService(db *mongo.Database, cfg *integrations.Secrets) *WeddingSe
 }
 
 func (s *WeddingService) Create(ctx context.Context, ownerID string, req dto.CreateWeddingRequest) (*dto.Wedding, error) {
-	if req.CoupleNames == "" {
+	if len(req.CoupleNames) == 0 {
 		return nil, errors.New("couple_names is required")
 	}
 	if req.Address == "" {
@@ -34,8 +34,11 @@ func (s *WeddingService) Create(ctx context.Context, ownerID string, req dto.Cre
 	if req.WhatsAppNumber == "" {
 		return nil, errors.New("whatsapp_number is required")
 	}
-	if req.Ages == "" {
+	if len(req.Ages) == 0 {
 		return nil, errors.New("ages is required")
+	}
+	if len(req.CoupleNames) != len(req.Ages) {
+		return nil, errors.New("couple_names and ages must have the same number of entries")
 	}
 	weddingDate, err := time.Parse("2006-01-02", req.WeddingDate)
 	if err != nil {
@@ -50,14 +53,21 @@ func (s *WeddingService) Create(ctx context.Context, ownerID string, req dto.Cre
 	w := &dto.Wedding{
 		ID:             uuid.NewString(),
 		OwnerID:        ownerID,
-		CoupleNames:    req.CoupleNames,
+		CoupleNames:    dto.StringArray(req.CoupleNames),
 		WeddingDate:    weddingDate,
 		Venue:          req.Venue,
 		Address:        req.Address,
 		WhatsAppNumber: req.WhatsAppNumber,
-		Ages:           req.Ages,
+		Ages:           dto.IntArray(req.Ages),
 		WelcomeMessage: req.WelcomeMessage,
+		WeddingTime:    req.WeddingTime,
 		Template:       req.Template,
+		Lighting:       req.Lighting,
+		StoryStyle:     req.StoryStyle,
+		CeremonyStyle:  req.CeremonyStyle,
+		VenueType:      req.VenueType,
+		WeddingMood:    req.WeddingMood,
+		WeddingTheme:   req.WeddingTheme,
 		QRSlug:         slug,
 		QRCodeURL:      qrCodeURL,
 		Tier:           dto.TierElopement,
@@ -161,13 +171,39 @@ func (s *WeddingService) Update(ctx context.Context, weddingID, ownerID string, 
 		w.WhatsAppNumber = *req.WhatsAppNumber
 	}
 	if req.Ages != nil {
-		w.Ages = *req.Ages
+		w.Ages = dto.IntArray(*req.Ages)
 	}
 	if req.WelcomeMessage != nil {
 		w.WelcomeMessage = *req.WelcomeMessage
 	}
 	if req.Template != nil {
 		w.Template = *req.Template
+	}
+	if req.Lighting != nil {
+		w.Lighting = *req.Lighting
+	}
+	if req.StoryStyle != nil {
+		w.StoryStyle = *req.StoryStyle
+	}
+	if req.CeremonyStyle != nil {
+		w.CeremonyStyle = *req.CeremonyStyle
+	}
+	if req.VenueType != nil {
+		w.VenueType = *req.VenueType
+	}
+	if req.WeddingMood != nil {
+		w.WeddingMood = *req.WeddingMood
+	}
+	if req.WeddingTheme != nil {
+		w.WeddingTheme = *req.WeddingTheme
+	}
+	if req.WeddingTime != nil {
+		if *req.WeddingTime != "" {
+			if _, err := time.Parse("15:04", *req.WeddingTime); err != nil {
+				return nil, errors.New("wedding_time must be in HH:MM format")
+			}
+		}
+		w.WeddingTime = *req.WeddingTime
 	}
 	if req.WeddingDate != nil {
 		d, err := time.Parse("2006-01-02", *req.WeddingDate)
