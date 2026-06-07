@@ -108,6 +108,11 @@ type UploadAnalysis struct {
 	SafeScore         *float64       `json:"safe_score,omitempty" bson:"safe_score,omitempty"`
 	StudioProbability *float64       `json:"studio_probability,omitempty" bson:"studio_probability,omitempty"`
 	ActCandidates     []ActCandidate `json:"act_candidates,omitempty" bson:"act_candidates,omitempty"`
+	// EventType classifies the wedding moment captured in this photo.
+	// Values: pre_shoot | getting_ready | ceremony | reception | other
+	EventType   string   `json:"event_type,omitempty" bson:"event_type,omitempty"`
+	// ClothColors lists dominant outfit colours visible (e.g. ["white","gold"]).
+	ClothColors []string `json:"cloth_colors,omitempty" bson:"cloth_colors,omitempty"`
 	Error             *string        `json:"error,omitempty" bson:"error,omitempty"`
 	Processing        ProcessingStages `json:"processing,omitempty" bson:"processing,omitempty"`
 }

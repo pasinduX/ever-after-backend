@@ -108,7 +108,20 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 			map[string]any{
 				"role": "user",
 				"content": []any{
-					map[string]any{"type": "input_text", "text": "Quickly assess this wedding photo. Return only valid JSON: {\"face_count\": 3, \"is_usable\": true, \"indoor_outdoor\": \"outdoor\", \"basic_scene\": \"people\", \"blur_score\": 0.1}. is_usable=false for blurry/dark/accidental shots. basic_scene: people|ceremony|venue|detail|other. blur_score 0.0-1.0 where 0.0=sharp."},
+					map[string]any{"type": "input_text", "text": `Assess this wedding photo. Return ONLY valid JSON with exactly these fields:
+{"face_count":2,"is_usable":true,"indoor_outdoor":"outdoor","basic_scene":"people","blur_score":0.1,"event_type":"ceremony","cloth_colors":["white","gold"]}
+
+Rules:
+- is_usable: false for blurry, dark, accidental, or near-empty shots
+- basic_scene: people|ceremony|venue|detail|other
+- blur_score: 0.0 (sharp) – 1.0 (very blurry)
+- event_type:
+    pre_shoot     = staged couple portraits taken before the wedding day (park, studio, beach, etc.)
+    getting_ready = bride or groom preparing — makeup, dressing, hair
+    ceremony      = vows, ring exchange, altar, officiant present
+    reception     = party, dancing, dinner, cake cutting
+    other         = anything that does not clearly fit the above
+- cloth_colors: up to 2 dominant outfit/clothing colours visible (e.g. ["white","gold"]); [] if no people or no clear clothing`},
 					map[string]any{"type": "input_image", "image_url": imageURL},
 				},
 			},
@@ -166,13 +179,15 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 	}
 
 	jsonText = sanitizeOpenAIJSON(jsonText)
-	// Lightweight upload-time parse — only fast signals needed immediately.
+
 	var parsed struct {
 		FaceCount     *int     `json:"face_count,omitempty"`
 		IsUsable      *bool    `json:"is_usable,omitempty"`
 		IndoorOutdoor string   `json:"indoor_outdoor,omitempty"`
 		BasicScene    string   `json:"basic_scene,omitempty"`
 		BlurScore     *float64 `json:"blur_score,omitempty"`
+		EventType     string   `json:"event_type,omitempty"`
+		ClothColors   []string `json:"cloth_colors,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(jsonText), &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse openai response JSON: %w; response=%s", err, jsonText)
@@ -196,6 +211,8 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 		Category:      dto.CategoryOther,
 		DetectedFaces: parsed.FaceCount,
 		SceneTags:     sceneTags,
+		EventType:     parsed.EventType,
+		ClothColors:   parsed.ClothColors,
 		Processing: dto.ProcessingStages{
 			Thumbnail:      dto.AnalysisStatusSucceeded,
 			AIAnalysis:     dto.AnalysisStatusSucceeded,
@@ -214,6 +231,8 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 			"indoor_outdoor": parsed.IndoorOutdoor,
 			"basic_scene":    parsed.BasicScene,
 			"blur_score":     parsed.BlurScore,
+			"event_type":     parsed.EventType,
+			"cloth_colors":   parsed.ClothColors,
 		},
 		Analysis: analysis,
 	}

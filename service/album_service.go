@@ -640,6 +640,12 @@ type compactImageInfo struct {
 	SceneTags   []string `json:"scene_tags,omitempty"`
 	Faces       int      `json:"faces"`
 	Quality     float64  `json:"quality"`
+	// ShootType is derived from timestamp vs wedding date: pre_shoot | wedding_day | guest
+	ShootType   string   `json:"shoot_type"`
+	// EventType comes from AI analysis at upload time: pre_shoot | getting_ready | ceremony | reception | other
+	EventType   string   `json:"event_type,omitempty"`
+	// ClothColors lists dominant outfit colours AI saw at upload time (e.g. ["white","gold"])
+	ClothColors []string `json:"cloth_colors,omitempty"`
 }
 
 // preProcessUploads filters approved + usable photos, deduplicates by phash/content_hash,
@@ -688,6 +694,23 @@ func deriveQuality(u *dto.Upload) float64 {
 	return 0.5
 }
 
+// deriveShootType classifies a photo as pre_shoot, wedding_day, or guest without any AI call.
+// Guest uploads carry a non-empty GuestName. Pre-shoots are photos captured more than 12 hours
+// before the wedding date starts.
+func deriveShootType(u *dto.Upload, weddingDate time.Time) string {
+	if u.GuestName != nil && *u.GuestName != "" {
+		return "guest"
+	}
+	weddingDayStart := time.Date(
+		weddingDate.Year(), weddingDate.Month(), weddingDate.Day(),
+		0, 0, 0, 0, time.UTC,
+	)
+	if photoTime(u).Before(weddingDayStart.Add(-12 * time.Hour)) {
+		return "pre_shoot"
+	}
+	return "wedding_day"
+}
+
 func (s *AlbumService) generatePayloadViaAI(
 	ctx context.Context,
 	wedding *dto.Wedding,
@@ -706,10 +729,13 @@ func (s *AlbumService) generatePayloadViaAI(
 	for _, u := range filtered {
 		uploadMap[u.ID] = u
 		info := compactImageInfo{
-			ID:        u.ID,
-			Category:  string(u.Analysis.Category),
-			SceneTags: u.Analysis.SceneTags,
-			Quality:   deriveQuality(u),
+			ID:          u.ID,
+			Category:    string(u.Analysis.Category),
+			SceneTags:   u.Analysis.SceneTags,
+			Quality:     deriveQuality(u),
+			ShootType:   deriveShootType(u, wedding.WeddingDate),
+			EventType:   u.Analysis.EventType,
+			ClothColors: u.Analysis.ClothColors,
 		}
 		if u.Orientation != nil {
 			info.Orientation = *u.Orientation
@@ -767,13 +793,22 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary.`
 
 %s
 
-RULES:
+CHAPTER GROUPING RULES (most important):
+- NEVER mix shoot_type "pre_shoot" with shoot_type "wedding_day" in the same chapter
+- shoot_type "pre_shoot"    → goes in the ANTICIPATION chapter only
+- event_type "getting_ready"→ goes in a PREPARATION chapter (act: "ANTICIPATION" is acceptable if no separate act exists)
+- event_type "ceremony"     → goes in the CEREMONY chapter
+- event_type "reception"    → goes in the CELEBRATION chapter
+- shoot_type "guest"        → distribute across the most relevant chapter based on their event_type
+- If cloth_colors change significantly within a chapter (e.g. white→red outfit change), split into two blocks or a separate sub-section
+- Cover image: prefer shoot_type "wedding_day" + faces >= 2 + quality >= 0.8
+
+OTHER RULES:
 - 3–5 chapters; act values must be from: ANTICIPATION, CEREMONY, CELEBRATION, FINALE
 - Last chapter MUST be act "FINALE" containing a "finale" block
 - Include every image id in at least one block; never invent ids
 - Every image reference: {"id": "<exact id>"} — do not include urls
 - 4–7 blocks per chapter (FINALE may have 1–2 blocks)
-- Cover: pick the highest quality portrait with faces >= 2
 - gallery_grid/masonry columns must be 2 or 3 only — never 4 or more
 - Motions — fullscreen_image: {"reveal":"fade-in","ken_burns":true,"parallax":0.3,"duration":1.4}
             filmstrip:        {"reveal":"slide-left","duration":0.5}
@@ -781,7 +816,7 @@ RULES:
             quote/section:    {"reveal":"fade-up","duration":0.5}
             finale:           {"reveal":"fade-in","ken_burns":true,"parallax":0.2,"duration":2.4}
 - Apply filter {"grade":"%s","vignette":%g} to every image block
-- finale block: put the couple name in top-level "title" and the closing line in top-level "subtitle" — NOT inside an overlay
+- finale block: put the couple name in top-level "title" and closing line in top-level "subtitle" — NOT inside an overlay
 
 Return this exact JSON structure:
 {
@@ -792,28 +827,28 @@ Return this exact JSON structure:
   "cover": {"image": {"id": "..."}, "title": "%s", "subtitle": "%s · %s"},
   "chapters": [
     {
-      "id": "ch_anticipation",
-      "title": "The Anticipation",
-      "act": "ANTICIPATION",
+      "id": "ch_<act_lowercase>",
+      "title": "<evocative chapter title matching the act and images>",
+      "act": "<ANTICIPATION|CEREMONY|CELEBRATION|FINALE — chosen from image shoot_type/event_type>",
       "blocks": [
-        {"id": "b1", "type": "section_title", "title": "...", "motion": {"reveal": "fade-up", "duration": 0.5}},
-        {"id": "b2", "type": "quote", "layout": "centered", "text": "...", "motion": {"reveal": "fade-up", "duration": 0.8}},
-        {"id": "b3", "type": "fullscreen_image", "image": {"id": "..."}, "height": "full",
+        {"id": "<unique_id>", "type": "section_title", "title": "...", "motion": {"reveal": "fade-up", "duration": 0.5}},
+        {"id": "<unique_id>", "type": "quote", "layout": "centered", "text": "...", "motion": {"reveal": "fade-up", "duration": 0.8}},
+        {"id": "<unique_id>", "type": "fullscreen_image", "image": {"id": "..."},  "height": "full",
           "overlay": {"title": "...", "alignment": "bottom-left", "reveal_delay": 0.6},
           "motion": {"reveal": "fade-in", "ken_burns": true, "parallax": 0.3, "duration": 1.4},
           "filter": {"grade": "%s", "vignette": %g}},
-        {"id": "b4", "type": "gallery_grid", "columns": 3, "images": [{"id": "..."}],
+        {"id": "<unique_id>", "type": "gallery_grid", "columns": 3, "images": [{"id": "..."}],
           "motion": {"reveal": "fade-up", "duration": 0.6}, "filter": {"grade": "%s", "vignette": %g}}
       ]
     },
     {
       "id": "ch_finale",
-      "title": "Finale",
+      "title": "<closing chapter title personal to this couple>",
       "act": "FINALE",
       "blocks": [
-        {"id": "b_finale", "type": "finale", "background_image": {"id": "..."},
-          "title": "The End — and the Beginning",
-          "subtitle": "Thank you for being part of our story",
+        {"id": "<unique_id>", "type": "finale", "background_image": {"id": "..."},
+          "title": "<couple names>",
+          "subtitle": "<short closing line personal to this wedding>",
           "motion": {"reveal": "fade-in", "ken_burns": true, "parallax": 0.2, "duration": 2.4}}
       ]
     }
