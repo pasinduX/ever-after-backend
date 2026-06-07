@@ -54,6 +54,19 @@ func NewUploadService(db *mongo.Database, cfg *integrations.Secrets, s3Client *s
 	return &UploadService{db: db, cfg: cfg, s3: s3Client, presigner: presigner, analysis: analysis}, nil
 }
 
+// FreshURL generates a new presigned GET URL for the given S3 file key.
+// Call this at serve time so URLs are never stale when delivered to the client.
+func (s *UploadService) FreshURL(fileKey string) string {
+	if fileKey == "" {
+		return ""
+	}
+	url, err := s.buildFileURL(fileKey)
+	if err != nil {
+		return ""
+	}
+	return url
+}
+
 func (s *UploadService) buildFileURL(fileKey string) (string, error) {
 	if s.cfg.S3Bucket == "" {
 		return "", errors.New("s3 bucket is not configured")

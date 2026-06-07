@@ -102,7 +102,7 @@ func NewRouter(
 	weddings.Patch("/:id/album/acts", api.UpdateActs(albumSvc))
 	weddings.Patch("/:id/album/style", api.SetAlbumStyle(albumSvc))
 
-	enrichH := api.NewEnrichmentHandler(enrichSvc, payloadSvc)
+	enrichH := api.NewEnrichmentHandler(enrichSvc, payloadSvc, uploadSvc)
 	weddings.Post("/:id/enrich", enrichH.StartEnrichment)
 	weddings.Get("/:id/enrich/status", enrichH.GetEnrichmentStatus)
 	weddings.Get("/:id/album/payload", enrichH.GetAlbumPayload)

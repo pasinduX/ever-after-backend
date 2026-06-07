@@ -192,13 +192,32 @@ func (s *AlbumService) generateActs(ctx context.Context, weddingID string) error
 		return err
 	}
 
-	// Build and store the payload so future fetches are just a DB read.
-	if s.payload != nil {
-		if p, err := s.payload.BuildPayload(ctx, weddingID); err == nil {
-			_ = dao.UpsertAlbumPayload(ctx, s.db, p)
-		} else {
-			slog.Warn("payload build failed after act generation", "wedding_id", weddingID, "error", err)
+	// Fetch the album config to get the requested style.
+	albumCfg, _ := dao.FindAlbumConfig(ctx, s.db, weddingID)
+	style := dto.AlbumStyleCinematic
+	if albumCfg != nil && albumCfg.Style != "" {
+		style = albumCfg.Style
+	}
+
+	// Build and store the payload.
+	// Prefer AI-generated payload (full creative control); fall back to Go builder.
+	var payload *dto.AlbumPayload
+	if s.cfg.OpenAIAPIKey != "" {
+		var aiErr error
+		payload, aiErr = s.generatePayloadViaAI(ctx, wedding, uploads, style)
+		if aiErr != nil {
+			slog.Warn("AI payload generation failed, falling back to Go builder", "wedding_id", weddingID, "error", aiErr)
 		}
+	}
+	if payload == nil && s.payload != nil {
+		var fbErr error
+		payload, fbErr = s.payload.BuildPayload(ctx, weddingID)
+		if fbErr != nil {
+			slog.Warn("Go payload build also failed", "wedding_id", weddingID, "error", fbErr)
+		}
+	}
+	if payload != nil {
+		_ = dao.UpsertAlbumPayload(ctx, s.db, payload)
 	}
 	return nil
 }
@@ -338,6 +357,19 @@ type segmentAssignment struct {
 	Confidence   float64 `json:"confidence"`
 }
 
+func parseSegmentAssignments(jsonText string) ([]segmentAssignment, error) {
+	var assignments []segmentAssignment
+	if err := json.Unmarshal([]byte(jsonText), &assignments); err == nil {
+		return assignments, nil
+	}
+
+	var assignment segmentAssignment
+	if err := json.Unmarshal([]byte(jsonText), &assignment); err != nil {
+		return nil, err
+	}
+	return []segmentAssignment{assignment}, nil
+}
+
 func (s *AlbumService) assignActsViaAI(ctx context.Context, wedding *dto.Wedding, segs []photoSegment, summaries []segmentSummary) ([]*dto.StoryAct, error) {
 	summaryJSON, err := json.Marshal(summaries)
 	if err != nil {
@@ -390,8 +422,8 @@ Confidence: >0.85 = clear signal, 0.60-0.85 = some ambiguity, <0.60 = unclear`,
 		return nil, err
 	}
 
-	var assignments []segmentAssignment
-	if err := json.Unmarshal([]byte(jsonText), &assignments); err != nil {
+	assignments, err := parseSegmentAssignments(jsonText)
+	if err != nil {
 		return nil, fmt.Errorf("parse act assignments: %w; response=%s", err, jsonText)
 	}
 
@@ -595,6 +627,287 @@ func (s *AlbumService) callOpenAI(ctx context.Context, systemPrompt, userPrompt 
 		}
 	}
 	return "", errors.New("openai response missing output text")
+}
+
+// --- AI payload generation ---
+
+// compactImageInfo is the minimal projection sent to the AI — no URLs.
+// The AI references images by stable id only; URLs are injected after by hydratePayload.
+type compactImageInfo struct {
+	ID          string   `json:"id"`
+	Orientation string   `json:"orientation,omitempty"`
+	Category    string   `json:"category"`
+	SceneTags   []string `json:"scene_tags,omitempty"`
+	Faces       int      `json:"faces"`
+	Quality     float64  `json:"quality"`
+}
+
+// preProcessUploads filters approved + usable photos, deduplicates by phash/content_hash,
+// and sorts by category then upload time to build a stable timeline for the AI.
+func preProcessUploads(uploads []*dto.Upload) []*dto.Upload {
+	seen := make(map[string]struct{})
+	out := make([]*dto.Upload, 0, len(uploads))
+	for _, u := range uploads {
+		if !u.IsApproved {
+			continue
+		}
+		if v, ok := u.AIInsights["is_usable"]; ok {
+			if b, ok2 := v.(bool); ok2 && !b {
+				continue
+			}
+		}
+		key := u.PHash
+		if key == "" {
+			key = u.ContentHash
+		}
+		if key != "" {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ci, cj := string(out[i].Analysis.Category), string(out[j].Analysis.Category)
+		if ci != cj {
+			return ci < cj
+		}
+		return photoTime(out[i]).Before(photoTime(out[j]))
+	})
+	return out
+}
+
+func deriveQuality(u *dto.Upload) float64 {
+	if u.Analysis.QualityScore != nil {
+		return *u.Analysis.QualityScore
+	}
+	if u.QualityScore != nil {
+		return *u.QualityScore
+	}
+	return 0.5
+}
+
+func (s *AlbumService) generatePayloadViaAI(
+	ctx context.Context,
+	wedding *dto.Wedding,
+	uploads []*dto.Upload,
+	style dto.AlbumStyle,
+) (*dto.AlbumPayload, error) {
+	// Pre-process: filter, dedup by phash/content_hash, sort by category + time.
+	filtered := preProcessUploads(uploads)
+	if len(filtered) == 0 {
+		return nil, errors.New("no usable photos after pre-processing")
+	}
+
+	// Build uploadMap for later hydration + compact list for the AI (no URLs).
+	uploadMap := make(map[string]*dto.Upload, len(filtered))
+	compactImages := make([]compactImageInfo, 0, len(filtered))
+	for _, u := range filtered {
+		uploadMap[u.ID] = u
+		info := compactImageInfo{
+			ID:        u.ID,
+			Category:  string(u.Analysis.Category),
+			SceneTags: u.Analysis.SceneTags,
+			Quality:   deriveQuality(u),
+		}
+		if u.Orientation != nil {
+			info.Orientation = *u.Orientation
+		}
+		if u.Analysis.DetectedFaces != nil {
+			info.Faces = *u.Analysis.DetectedFaces
+		} else if u.DetectedFaces != nil {
+			info.Faces = *u.DetectedFaces
+		}
+		compactImages = append(compactImages, info)
+	}
+
+	coupleNames := strings.Join([]string(wedding.CoupleNames), " & ")
+	theme := themeForStyle(style, wedding.WeddingMood, wedding.WeddingTheme)
+
+	colorGrade := "muted"
+	vignette := 0.25
+	if style == dto.AlbumStyleRomantic {
+		colorGrade = "warm"
+		vignette = 0.10
+	}
+
+	// AI input: wedding facts + style brief + compact image list (no URLs).
+	aiInput := map[string]any{
+		"wedding": map[string]any{
+			"couple_names":    []string(wedding.CoupleNames),
+			"wedding_date":    wedding.WeddingDate.Format("2006-01-02"),
+			"venue":           wedding.Venue,
+			"tier":            string(wedding.Tier),
+			"ceremony_style":  wedding.CeremonyStyle,
+			"mood":            wedding.WeddingMood,
+			"theme":           wedding.WeddingTheme,
+			"story_style":     wedding.StoryStyle,
+			"lighting":        wedding.Lighting,
+			"welcome_message": wedding.WelcomeMessage,
+		},
+		"style_brief": map[string]any{
+			"style": string(style),
+			"mood":  wedding.WeddingMood,
+		},
+		"images": compactImages,
+	}
+
+	inputJSON, err := json.Marshal(aiInput)
+	if err != nil {
+		return nil, err
+	}
+
+	systemPrompt := `You are a cinematic wedding film editor. Build a narrative arc across chapters.
+Reference images by id only. Never invent ids. Prefer portrait + quality >= 0.8 + faces >= 2 for cover/fullscreen/finale.
+Use grids/filmstrips for the long tail. Keep 4–7 blocks per chapter.
+Return ONLY valid JSON — no markdown, no code fences, no commentary.`
+
+	userPrompt := fmt.Sprintf(`Design a cinematic wedding album from the following data. Return ONLY valid JSON.
+
+%s
+
+RULES:
+- 3–5 chapters; act values must be from: ANTICIPATION, CEREMONY, CELEBRATION, FINALE
+- Last chapter MUST be act "FINALE" containing a "finale" block
+- Include every image id in at least one block; never invent ids
+- Every image reference: {"id": "<exact id>"} — do not include urls
+- 4–7 blocks per chapter (FINALE may have 1–2 blocks)
+- Cover: pick the highest quality portrait with faces >= 2
+- gallery_grid/masonry columns must be 2 or 3 only — never 4 or more
+- Motions — fullscreen_image: {"reveal":"fade-in","ken_burns":true,"parallax":0.3,"duration":1.4}
+            filmstrip:        {"reveal":"slide-left","duration":0.5}
+            masonry/gallery:  {"reveal":"fade-up","duration":0.6}
+            quote/section:    {"reveal":"fade-up","duration":0.5}
+            finale:           {"reveal":"fade-in","ken_burns":true,"parallax":0.2,"duration":2.4}
+- Apply filter {"grade":"%s","vignette":%g} to every image block
+- finale block: put the couple name in top-level "title" and the closing line in top-level "subtitle" — NOT inside an overlay
+
+Return this exact JSON structure:
+{
+  "version": "1.0",
+  "album_id": "%s",
+  "style": "%s",
+  "theme": {"primary_color": "%s", "secondary_color": "%s", "font": "%s", "mood": "%s"},
+  "cover": {"image": {"id": "..."}, "title": "%s", "subtitle": "%s · %s"},
+  "chapters": [
+    {
+      "id": "ch_anticipation",
+      "title": "The Anticipation",
+      "act": "ANTICIPATION",
+      "blocks": [
+        {"id": "b1", "type": "section_title", "title": "...", "motion": {"reveal": "fade-up", "duration": 0.5}},
+        {"id": "b2", "type": "quote", "layout": "centered", "text": "...", "motion": {"reveal": "fade-up", "duration": 0.8}},
+        {"id": "b3", "type": "fullscreen_image", "image": {"id": "..."}, "height": "full",
+          "overlay": {"title": "...", "alignment": "bottom-left", "reveal_delay": 0.6},
+          "motion": {"reveal": "fade-in", "ken_burns": true, "parallax": 0.3, "duration": 1.4},
+          "filter": {"grade": "%s", "vignette": %g}},
+        {"id": "b4", "type": "gallery_grid", "columns": 3, "images": [{"id": "..."}],
+          "motion": {"reveal": "fade-up", "duration": 0.6}, "filter": {"grade": "%s", "vignette": %g}}
+      ]
+    },
+    {
+      "id": "ch_finale",
+      "title": "Finale",
+      "act": "FINALE",
+      "blocks": [
+        {"id": "b_finale", "type": "finale", "background_image": {"id": "..."},
+          "title": "The End — and the Beginning",
+          "subtitle": "Thank you for being part of our story",
+          "motion": {"reveal": "fade-in", "ken_burns": true, "parallax": 0.2, "duration": 2.4}}
+      ]
+    }
+  ],
+  "soundtrack": {"autoplay": false, "volume": 0.35}
+}`,
+		string(inputJSON),
+		colorGrade, vignette,
+		wedding.ID, string(style),
+		theme.PrimaryColor, theme.SecondaryColor, theme.Font, theme.Mood,
+		coupleNames, wedding.WeddingDate.Format("2 January 2006"), wedding.Venue,
+		colorGrade, vignette,
+		colorGrade, vignette,
+	)
+
+	// Text-only call — the AI is a creative director working from metadata, not image pixels.
+	jsonText, err := s.callOpenAI(ctx, systemPrompt, userPrompt)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload dto.AlbumPayload
+	if err := json.Unmarshal([]byte(jsonText), &payload); err != nil {
+		return nil, fmt.Errorf("parse AI payload JSON: %w; snippet=%s", err, jsonText[:min(len(jsonText), 300)])
+	}
+
+	payload.Version = "1.0"
+	payload.AlbumID = wedding.ID
+	if payload.Style == "" {
+		payload.Style = style
+	}
+
+	// Hydrate: swap id-only AssetObjects for full objects (URL + dimensions).
+	// Blocks referencing unknown ids are dropped rather than crashing.
+	hydratePayload(&payload, uploadMap)
+
+	if len(payload.Chapters) == 0 {
+		return nil, errors.New("AI returned no chapters")
+	}
+
+	return &payload, nil
+}
+
+// hydratePayload resolves every AssetObject's id to a live URL + dimensions from uploadMap.
+// A block whose primary image id is unknown is dropped entirely.
+// Unknown ids inside image arrays are filtered out.
+func hydratePayload(payload *dto.AlbumPayload, uploadMap map[string]*dto.Upload) {
+	fill := func(a *dto.AssetObject) bool {
+		if a == nil || a.ID == "" {
+			return false
+		}
+		u, ok := uploadMap[a.ID]
+		if !ok {
+			return false
+		}
+		a.URL = u.Storage.OriginalURL
+		if a.URL == "" {
+			a.URL = u.FileURL
+		}
+		if u.Metadata.Width != nil {
+			a.Width = *u.Metadata.Width
+		}
+		if u.Metadata.Height != nil {
+			a.Height = *u.Metadata.Height
+		}
+		if u.Metadata.AspectRatio != nil {
+			a.AspectRatio = *u.Metadata.AspectRatio
+		}
+		return true
+	}
+
+	fill(payload.Cover.Image)
+
+	for ci := range payload.Chapters {
+		var kept []dto.AlbumBlock
+		for bi := range payload.Chapters[ci].Blocks {
+			blk := &payload.Chapters[ci].Blocks[bi]
+			if blk.Image != nil && !fill(blk.Image) {
+				continue
+			}
+			fill(blk.BackgroundImage)
+			fill(blk.LeftImage)
+			fill(blk.FallbackImage)
+			var valid []dto.AssetObject
+			for ii := range blk.Images {
+				if fill(&blk.Images[ii]) {
+					valid = append(valid, blk.Images[ii])
+				}
+			}
+			blk.Images = valid
+			kept = append(kept, *blk)
+		}
+		payload.Chapters[ci].Blocks = kept
+	}
 }
 
 // --- Act metadata ---
