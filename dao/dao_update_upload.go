@@ -85,6 +85,12 @@ func UpdateUploadAnalysis(ctx context.Context, db *mongo.Database, uploadID stri
 	if upload.Analysis.SafeScore != nil {
 		update["analysis.safe_score"] = *upload.Analysis.SafeScore
 	}
+	if upload.Analysis.StudioProbability != nil {
+		update["analysis.studio_probability"] = *upload.Analysis.StudioProbability
+	}
+	if len(upload.Analysis.ActCandidates) > 0 {
+		update["analysis.act_candidates"] = upload.Analysis.ActCandidates
+	}
 	if upload.Analysis.Processing != (dto.ProcessingStages{}) {
 		update["analysis.processing"] = upload.Analysis.Processing
 	}

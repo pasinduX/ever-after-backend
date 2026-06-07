@@ -7,6 +7,7 @@ import (
 	"github.com/storyvows/backend/dto"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func FindUploadsByWedding(ctx context.Context, db *mongo.Database, weddingID string) ([]*dto.Upload, error) {
@@ -33,6 +34,27 @@ func FindApprovedUploadsByWedding(ctx context.Context, db *mongo.Database, weddi
 	var uploads []*dto.Upload
 	if err := cursor.All(ctx, &uploads); err != nil {
 		return nil, fmt.Errorf("dao FindApprovedUploadsByWedding decode: %w", err)
+	}
+	return uploads, nil
+}
+
+func FindApprovedUploadsByWeddingSorted(ctx context.Context, db *mongo.Database, weddingID string) ([]*dto.Upload, error) {
+	opts := options.Find().SetSort(bson.D{
+		{Key: "timeline.captured_at", Value: 1},
+		{Key: "uploaded_at", Value: 1},
+	})
+	cursor, err := db.Collection("uploads").Find(ctx,
+		bson.M{"wedding_id": weddingID, "is_approved": true},
+		opts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dao FindApprovedUploadsByWeddingSorted: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var uploads []*dto.Upload
+	if err := cursor.All(ctx, &uploads); err != nil {
+		return nil, fmt.Errorf("dao FindApprovedUploadsByWeddingSorted decode: %w", err)
 	}
 	return uploads, nil
 }

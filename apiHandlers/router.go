@@ -25,6 +25,9 @@ func NewRouter(
 	cardsSvc *service.CardsService,
 	uploadSvc *service.UploadService,
 	paymentSvc *service.PaymentService,
+	albumSvc *service.AlbumService,
+	enrichSvc *service.EnrichmentService,
+	payloadSvc *service.PayloadService,
 	hub *realtime.Hub,
 ) *fiber.App {
 	app := fiber.New(fiber.Config{
@@ -93,6 +96,16 @@ func NewRouter(
 	weddings.Delete("/:id/uploads/:uploadId", api.DeleteUpload(uploadSvc))
 	weddings.Get("/:id/album", api.Album(db))
 	weddings.Get("/:id/album/highlights", api.Highlights(db))
+	weddings.Post("/:id/album/generate", api.GenerateAlbum(albumSvc))
+	weddings.Get("/:id/album/status", api.GetAlbumStatus(albumSvc))
+	weddings.Get("/:id/album/acts", api.GetActs(albumSvc))
+	weddings.Patch("/:id/album/acts", api.UpdateActs(albumSvc))
+	weddings.Patch("/:id/album/style", api.SetAlbumStyle(albumSvc))
+
+	enrichH := api.NewEnrichmentHandler(enrichSvc, payloadSvc)
+	weddings.Post("/:id/enrich", enrichH.StartEnrichment)
+	weddings.Get("/:id/enrich/status", enrichH.GetEnrichmentStatus)
+	weddings.Get("/:id/album/payload", enrichH.GetAlbumPayload)
 
 	app.Post("/api/uploads", api.UploadToFolder(uploadSvc, hub, cfg.MaxUploadSize))
 	weddings.Get("/:id/album/download", api.Download(db))

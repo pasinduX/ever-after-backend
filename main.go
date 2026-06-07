@@ -59,9 +59,14 @@ func main() {
 		os.Exit(1)
 	}
 	paymentSvc := service.NewPaymentService(db, cfg)
+	albumSvc := service.NewAlbumService(db, cfg)
+	albumSvc.Start()
+	enrichSvc := service.NewEnrichmentService(db, cfg, analysisSvc)
+	enrichSvc.Start()
+	payloadSvc := service.NewPayloadService(db)
 	hub := realtime.NewHub()
 
-	app := apiHandlers.NewRouter(cfg, db, authSvc, weddingSvc, guestSvc, whatsappSvc, cardsSvc, uploadSvc, paymentSvc, hub)
+	app := apiHandlers.NewRouter(cfg, db, authSvc, weddingSvc, guestSvc, whatsappSvc, cardsSvc, uploadSvc, paymentSvc, albumSvc, enrichSvc, payloadSvc, hub)
 
 	slog.Info("starting server", "port", cfg.Port, "env", cfg.Env)
 	go func() {

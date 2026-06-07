@@ -2,6 +2,42 @@ package dto
 
 import "time"
 
+type UploadEXIF struct {
+	CapturedAt  *time.Time `json:"captured_at,omitempty" bson:"captured_at,omitempty"`
+	CameraMake  string     `json:"camera_make,omitempty" bson:"camera_make,omitempty"`
+	CameraModel string     `json:"camera_model,omitempty" bson:"camera_model,omitempty"`
+	Lat         *float64   `json:"lat,omitempty" bson:"lat,omitempty"`
+	Lng         *float64   `json:"lng,omitempty" bson:"lng,omitempty"`
+}
+
+type UploadEnrichment struct {
+	StoryPhase        string     `json:"story_phase,omitempty" bson:"story_phase,omitempty"`
+	Moment            string     `json:"moment,omitempty" bson:"moment,omitempty"`
+	EmotionScore      *float64   `json:"emotion_score,omitempty" bson:"emotion_score,omitempty"`
+	HeroScore         *int       `json:"hero_score,omitempty" bson:"hero_score,omitempty"`
+	StudioProbability *float64   `json:"studio_probability,omitempty" bson:"studio_probability,omitempty"`
+	EnrichedAt        *time.Time `json:"enriched_at,omitempty" bson:"enriched_at,omitempty"`
+}
+
+type EnrichmentStatus string
+
+const (
+	EnrichmentStatusPending    EnrichmentStatus = "pending"
+	EnrichmentStatusProcessing EnrichmentStatus = "processing"
+	EnrichmentStatusCompleted  EnrichmentStatus = "completed"
+	EnrichmentStatusFailed     EnrichmentStatus = "failed"
+)
+
+type EnrichmentConfig struct {
+	ID            string           `json:"id" bson:"_id,omitempty"`
+	WeddingID     string           `json:"wedding_id" bson:"wedding_id"`
+	Status        EnrichmentStatus `json:"status" bson:"status"`
+	TotalPhotos   int              `json:"total_photos" bson:"total_photos"`
+	Enriched      int              `json:"enriched" bson:"enriched"`
+	Error         *string          `json:"error,omitempty" bson:"error,omitempty"`
+	UpdatedAt     time.Time        `json:"updated_at" bson:"updated_at"`
+}
+
 type UploadCategory string
 
 const (
@@ -56,17 +92,24 @@ type ProcessingStages struct {
 	DuplicateCheck AnalysisStatus `json:"duplicate_check" bson:"duplicate_check"`
 }
 
+type ActCandidate struct {
+	Act        string  `json:"act" bson:"act"`
+	Confidence float64 `json:"confidence" bson:"confidence"`
+}
+
 type UploadAnalysis struct {
-	Status        AnalysisStatus   `json:"status" bson:"status"`
-	Category      UploadCategory   `json:"category" bson:"category"`
-	SceneTags     []string         `json:"scene_tags,omitempty" bson:"scene_tags,omitempty"`
-	DetectedFaces *int             `json:"detected_faces,omitempty" bson:"detected_faces,omitempty"`
-	QualityScore  *float64         `json:"quality_score,omitempty" bson:"quality_score,omitempty"`
-	EmotionScore  *float64         `json:"emotion_score,omitempty" bson:"emotion_score,omitempty"`
-	FeaturedScore *int             `json:"featured_score,omitempty" bson:"featured_score,omitempty"`
-	SafeScore     *float64         `json:"safe_score,omitempty" bson:"safe_score,omitempty"`
-	Error         *string          `json:"error,omitempty" bson:"error,omitempty"`
-	Processing    ProcessingStages `json:"processing,omitempty" bson:"processing,omitempty"`
+	Status            AnalysisStatus `json:"status" bson:"status"`
+	Category          UploadCategory `json:"category" bson:"category"`
+	SceneTags         []string       `json:"scene_tags,omitempty" bson:"scene_tags,omitempty"`
+	DetectedFaces     *int           `json:"detected_faces,omitempty" bson:"detected_faces,omitempty"`
+	QualityScore      *float64       `json:"quality_score,omitempty" bson:"quality_score,omitempty"`
+	EmotionScore      *float64       `json:"emotion_score,omitempty" bson:"emotion_score,omitempty"`
+	FeaturedScore     *int           `json:"featured_score,omitempty" bson:"featured_score,omitempty"`
+	SafeScore         *float64       `json:"safe_score,omitempty" bson:"safe_score,omitempty"`
+	StudioProbability *float64       `json:"studio_probability,omitempty" bson:"studio_probability,omitempty"`
+	ActCandidates     []ActCandidate `json:"act_candidates,omitempty" bson:"act_candidates,omitempty"`
+	Error             *string        `json:"error,omitempty" bson:"error,omitempty"`
+	Processing        ProcessingStages `json:"processing,omitempty" bson:"processing,omitempty"`
 }
 
 type UploadGrouping struct {
@@ -98,12 +141,16 @@ type Upload struct {
 	SceneTags      []string         `json:"scene_tags,omitempty" bson:"scene_tags,omitempty"`
 	AnalysisError  *string          `json:"analysis_error,omitempty" bson:"analysis_error,omitempty"`
 	AIInsights     map[string]any   `json:"ai_insights,omitempty" bson:"ai_insights,omitempty"`
+	ContentHash    string           `json:"content_hash,omitempty" bson:"content_hash,omitempty"`
+	PHash          string           `json:"phash,omitempty" bson:"phash,omitempty"`
 	IsApproved     bool             `json:"is_approved" bson:"is_approved"`
 	UploadedAt     time.Time        `json:"uploaded_at" bson:"uploaded_at"`
 	Storage        UploadStorage    `json:"storage,omitempty" bson:"storage,omitempty"`
 	Metadata       UploadMetadata   `json:"metadata,omitempty" bson:"metadata,omitempty"`
 	Timeline       UploadTimeline   `json:"timeline,omitempty" bson:"timeline,omitempty"`
 	Analysis       UploadAnalysis   `json:"analysis,omitempty" bson:"analysis,omitempty"`
+	EXIF           UploadEXIF       `json:"exif,omitempty" bson:"exif,omitempty"`
+	Enrichment     UploadEnrichment `json:"enrichment,omitempty" bson:"enrichment,omitempty"`
 	Grouping       UploadGrouping   `json:"grouping,omitempty" bson:"grouping,omitempty"`
 	Moderation     UploadModeration `json:"moderation,omitempty" bson:"moderation,omitempty"`
 }

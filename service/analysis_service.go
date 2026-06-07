@@ -108,7 +108,7 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 			map[string]any{
 				"role": "user",
 				"content": []any{
-					map[string]any{"type": "input_text", "text": "Analyze this wedding photo and return only valid JSON with keys: category, quality_score, detected_faces, orientation, scene_tags. Use category values ceremony, candid, dancing, family or other."},
+					map[string]any{"type": "input_text", "text": "Quickly assess this wedding photo. Return only valid JSON: {\"face_count\": 3, \"is_usable\": true, \"indoor_outdoor\": \"outdoor\", \"basic_scene\": \"people\", \"blur_score\": 0.1}. is_usable=false for blurry/dark/accidental shots. basic_scene: people|ceremony|venue|detail|other. blur_score 0.0-1.0 where 0.0=sharp."},
 					map[string]any{"type": "input_image", "image_url": imageURL},
 				},
 			},
@@ -166,32 +166,36 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 	}
 
 	jsonText = sanitizeOpenAIJSON(jsonText)
+	// Lightweight upload-time parse — only fast signals needed immediately.
 	var parsed struct {
-		Category      string   `json:"category"`
-		QualityScore  *float64 `json:"quality_score,omitempty"`
-		DetectedFaces *int     `json:"detected_faces,omitempty"`
-		Orientation   string   `json:"orientation,omitempty"`
-		SceneTags     []string `json:"scene_tags,omitempty"`
-		EmotionScore  *float64 `json:"emotion_score,omitempty"`
-		FeaturedScore *int     `json:"featured_score,omitempty"`
-		SafeScore     *float64 `json:"safe_score,omitempty"`
-		CapturedAt    *string  `json:"captured_at,omitempty"`
+		FaceCount     *int     `json:"face_count,omitempty"`
+		IsUsable      *bool    `json:"is_usable,omitempty"`
+		IndoorOutdoor string   `json:"indoor_outdoor,omitempty"`
+		BasicScene    string   `json:"basic_scene,omitempty"`
+		BlurScore     *float64 `json:"blur_score,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(jsonText), &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse openai response JSON: %w; response=%s", err, jsonText)
 	}
 
-	category := normalizeUploadCategory(parsed.Category)
+	isUsable := true
+	if parsed.IsUsable != nil {
+		isUsable = *parsed.IsUsable
+	}
+
+	sceneTags := []string{}
+	if parsed.IndoorOutdoor != "" {
+		sceneTags = append(sceneTags, parsed.IndoorOutdoor)
+	}
+	if parsed.BasicScene != "" {
+		sceneTags = append(sceneTags, parsed.BasicScene)
+	}
+
 	analysis := dto.UploadAnalysis{
 		Status:        dto.AnalysisStatusSucceeded,
-		Category:      category,
-		SceneTags:     parsed.SceneTags,
-		DetectedFaces: parsed.DetectedFaces,
-		QualityScore:  parsed.QualityScore,
-		EmotionScore:  parsed.EmotionScore,
-		FeaturedScore: parsed.FeaturedScore,
-		SafeScore:     parsed.SafeScore,
-		Error:         nil,
+		Category:      dto.CategoryOther,
+		DetectedFaces: parsed.FaceCount,
+		SceneTags:     sceneTags,
 		Processing: dto.ProcessingStages{
 			Thumbnail:      dto.AnalysisStatusSucceeded,
 			AIAnalysis:     dto.AnalysisStatusSucceeded,
@@ -200,80 +204,23 @@ func (a *AnalysisService) analyzePhoto(ctx context.Context, imageURL string) (*d
 		},
 	}
 
-	if analysis.FeaturedScore == nil {
-		computed := computeFeaturedScore(parsed.QualityScore, parsed.EmotionScore, parsed.DetectedFaces, category)
-		analysis.FeaturedScore = &computed
-	}
-
 	upload := &dto.Upload{
-		Category:       category,
+		Category:       dto.CategoryOther,
 		AnalysisStatus: dto.AnalysisStatusSucceeded,
-		QualityScore:   parsed.QualityScore,
-		DetectedFaces:  parsed.DetectedFaces,
-		Orientation:    nil,
-		SceneTags:      parsed.SceneTags,
+		DetectedFaces:  parsed.FaceCount,
+		SceneTags:      sceneTags,
 		AIInsights: map[string]any{
-			"raw_category": parsed.Category,
+			"is_usable":      isUsable,
+			"indoor_outdoor": parsed.IndoorOutdoor,
+			"basic_scene":    parsed.BasicScene,
+			"blur_score":     parsed.BlurScore,
 		},
 		Analysis: analysis,
-	}
-
-	if parsed.Orientation != "" {
-		upload.Orientation = &parsed.Orientation
-		upload.Metadata.Orientation = &parsed.Orientation
-	}
-
-	if parsed.CapturedAt != nil {
-		if t, err := time.Parse(time.RFC3339, *parsed.CapturedAt); err == nil {
-			upload.TakenAt = &t
-			upload.Timeline = dto.UploadTimeline{CapturedAt: &t}
-		}
 	}
 
 	return upload, nil
 }
 
-func computeFeaturedScore(quality, emotion *float64, faces *int, category dto.UploadCategory) int {
-	score := 0.0
-	if quality != nil {
-		score += *quality * 60.0
-	}
-	if emotion != nil {
-		score += *emotion * 30.0
-	}
-	if faces != nil {
-		score += float64(min(*faces, 10)) * 1.5
-	}
-	if category == dto.CategoryCeremony || category == dto.CategoryFamily {
-		score += 10.0
-	}
-	if score > 100 {
-		score = 100
-	}
-	return int(score)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func normalizeUploadCategory(value string) dto.UploadCategory {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case string(dto.CategoryCeremony):
-		return dto.CategoryCeremony
-	case string(dto.CategoryCandid):
-		return dto.CategoryCandid
-	case string(dto.CategoryDancing):
-		return dto.CategoryDancing
-	case string(dto.CategoryFamily):
-		return dto.CategoryFamily
-	default:
-		return dto.CategoryOther
-	}
-}
 
 func sanitizeOpenAIJSON(text string) string {
 	text = strings.TrimSpace(text)

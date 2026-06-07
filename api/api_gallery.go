@@ -122,13 +122,17 @@ func Album(db *mongo.Database) fiber.Handler {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to load wedding")
 		}
 
-		uploads, err := dao.FindApprovedUploadsByWedding(c.UserContext(), db, c.Params("id"))
+		uploads, err := dao.FindApprovedUploadsByWedding(c.UserContext(), db, wedding.ID)
 		if err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to load album")
 		}
 
-		response := buildAlbumResponse(wedding, uploads)
-		return utils.SendJSON(c, fiber.StatusOK, response)
+		acts, _ := dao.FindStoryActs(c.UserContext(), db, wedding.ID)
+		if len(acts) > 0 {
+			return utils.SendJSON(c, fiber.StatusOK, buildAlbumFromActs(wedding, uploads, acts))
+		}
+
+		return utils.SendJSON(c, fiber.StatusOK, buildAlbumResponse(wedding, uploads))
 	}
 }
 
@@ -193,6 +197,134 @@ func buildAlbumResponse(wedding *dto.Wedding, uploads []*dto.Upload) AlbumRespon
 		FeaturedMemoryIDs: featuredIDs,
 		Media:             media,
 		Stats:             stats,
+	}
+}
+
+func buildAlbumFromActs(wedding *dto.Wedding, uploads []*dto.Upload, acts []*dto.StoryAct) AlbumResponse {
+	sorted := make([]*dto.Upload, len(uploads))
+	copy(sorted, uploads)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return getFeaturedScore(sorted[i]) > getFeaturedScore(sorted[j])
+	})
+
+	media := make(map[string]AlbumMedia, len(sorted))
+	uploadsByID := make(map[string]*dto.Upload, len(sorted))
+	for _, u := range sorted {
+		media[u.ID] = toAlbumMedia(u)
+		uploadsByID[u.ID] = u
+	}
+
+	heroPhotoID := ""
+	if len(acts) > 0 && acts[0].HeroPhotoID != "" {
+		heroPhotoID = acts[0].HeroPhotoID
+	} else if len(sorted) > 0 {
+		heroPhotoID = sorted[0].ID
+	}
+
+	hero := AlbumHero{
+		Title:        joinCoupleNames([]string(wedding.CoupleNames)),
+		Quote:        "Some memories deserve forever.",
+		CoverMediaID: heroPhotoID,
+	}
+
+	sections := make([]AlbumSection, 0, len(acts))
+	for _, act := range acts {
+		if len(act.PhotoIDs) == 0 {
+			continue
+		}
+		items := make([]AlbumSectionItem, 0, 8)
+		for j, id := range act.PhotoIDs {
+			if j >= 8 {
+				break
+			}
+			u, ok := uploadsByID[id]
+			if !ok {
+				continue
+			}
+			items = append(items, toAlbumSectionItem(u))
+		}
+		nextCursor := ""
+		if len(act.PhotoIDs) > 8 {
+			nextCursor = act.PhotoIDs[7]
+		}
+		sections = append(sections, AlbumSection{
+			ID:         fmt.Sprintf("act_%s", strings.ToLower(string(act.Label))),
+			Type:       string(act.Label),
+			Title:      act.Title,
+			Quote:      act.Quote,
+			Layout:     actLayout(act.Label),
+			Pace:       actPace(act.Label),
+			Transition: actTransition(act.Label),
+			Items:      items,
+			NextCursor: nextCursor,
+		})
+	}
+
+	featuredIDs := topItemIDs(sorted, 6)
+	stats := AlbumStats{
+		TotalUploads:   len(uploads),
+		CategoryCounts: categorizeCounts(uploads),
+		FeaturedCount:  len(featuredIDs),
+	}
+
+	return AlbumResponse{
+		Album: AlbumMeta{
+			ID:          wedding.ID,
+			Title:       joinCoupleNames([]string(wedding.CoupleNames)),
+			CoupleNames: []string(wedding.CoupleNames),
+		},
+		Hero:              hero,
+		Sections:          sections,
+		FeaturedMemoryIDs: featuredIDs,
+		Media:             media,
+		Stats:             stats,
+	}
+}
+
+func actLayout(label dto.ActLabel) string {
+	switch label {
+	case dto.ActCeremony:
+		return "cinematic"
+	case dto.ActFamilyBonds:
+		return "masonry"
+	case dto.ActJustTheTwo:
+		return "cinematic"
+	case dto.ActCelebration, dto.ActFinalDance:
+		return "filmstrip"
+	default:
+		return "masonry"
+	}
+}
+
+func actPace(label dto.ActLabel) string {
+	switch label {
+	case dto.ActAnticipation:
+		return "calm"
+	case dto.ActCeremony:
+		return "slow"
+	case dto.ActFamilyBonds:
+		return "calm"
+	case dto.ActJustTheTwo:
+		return "slow"
+	case dto.ActCelebration:
+		return "energetic"
+	case dto.ActFinalDance:
+		return "upbeat"
+	default:
+		return "steady"
+	}
+}
+
+func actTransition(label dto.ActLabel) string {
+	switch label {
+	case dto.ActCeremony, dto.ActJustTheTwo:
+		return "cinematic_fade"
+	case dto.ActFamilyBonds:
+		return "soft_pan"
+	case dto.ActCelebration, dto.ActFinalDance:
+		return "film_slide"
+	default:
+		return "fade"
 	}
 }
 
