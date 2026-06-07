@@ -67,12 +67,17 @@ func GetActs(svc *service.AlbumService) fiber.Handler {
 
 func UpdateActs(svc *service.AlbumService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		weddingID := c.Params("id")
+		if weddingID == "" {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "wedding id required")
+		}
+
 		var req dto.ConfirmActsRequest
 		if err := c.BodyParser(&req); err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 		}
 
-		if err := svc.ConfirmActs(c.UserContext(), req); err != nil {
+		if err := svc.ConfirmActs(c.UserContext(), weddingID, req); err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to update acts")
 		}
 

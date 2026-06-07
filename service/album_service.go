@@ -22,14 +22,16 @@ import (
 type AlbumService struct {
 	db         *mongo.Database
 	cfg        *integrations.Secrets
+	payload    *PayloadService
 	jobs       chan string
 	httpClient *http.Client
 }
 
-func NewAlbumService(db *mongo.Database, cfg *integrations.Secrets) *AlbumService {
+func NewAlbumService(db *mongo.Database, cfg *integrations.Secrets, payload *PayloadService) *AlbumService {
 	return &AlbumService{
 		db:         db,
 		cfg:        cfg,
+		payload:    payload,
 		jobs:       make(chan string, 50),
 		httpClient: &http.Client{Timeout: 90 * time.Second},
 	}
@@ -94,10 +96,16 @@ func (s *AlbumService) GetActs(ctx context.Context, weddingID string) ([]*dto.St
 	return dao.FindStoryActs(ctx, s.db, weddingID)
 }
 
-func (s *AlbumService) ConfirmActs(ctx context.Context, req dto.ConfirmActsRequest) error {
+func (s *AlbumService) ConfirmActs(ctx context.Context, weddingID string, req dto.ConfirmActsRequest) error {
 	for _, confirmation := range req.Acts {
 		if err := dao.UpdateStoryAct(ctx, s.db, confirmation.ID, confirmation.PhotoIDs, confirmation.Confirmed); err != nil {
 			return err
+		}
+	}
+	// Acts changed — rebuild and store the payload.
+	if s.payload != nil {
+		if p, err := s.payload.BuildPayload(ctx, weddingID); err == nil {
+			_ = dao.UpsertAlbumPayload(ctx, s.db, p)
 		}
 	}
 	return nil
@@ -110,7 +118,16 @@ func (s *AlbumService) SetStyle(ctx context.Context, weddingID string, style dto
 	}
 	cfg.WeddingID = weddingID
 	cfg.Style = style
-	return dao.UpsertAlbumConfig(ctx, s.db, cfg)
+	if err := dao.UpsertAlbumConfig(ctx, s.db, cfg); err != nil {
+		return err
+	}
+	// Style changed — rebuild and store the payload.
+	if s.payload != nil {
+		if p, err := s.payload.BuildPayload(ctx, weddingID); err == nil {
+			_ = dao.UpsertAlbumPayload(ctx, s.db, p)
+		}
+	}
+	return nil
 }
 
 // --- generation pipeline ---
@@ -165,13 +182,25 @@ func (s *AlbumService) generateActs(ctx context.Context, weddingID string) error
 		avgConf /= float64(len(acts))
 	}
 
-	return dao.UpsertAlbumConfig(ctx, s.db, &dto.AlbumConfig{
+	if err := dao.UpsertAlbumConfig(ctx, s.db, &dto.AlbumConfig{
 		WeddingID:   weddingID,
 		Status:      dto.AlbumStatusCompleted,
 		ActsCount:   len(acts),
 		Confidence:  avgConf,
 		NeedsReview: needsReview,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Build and store the payload so future fetches are just a DB read.
+	if s.payload != nil {
+		if p, err := s.payload.BuildPayload(ctx, weddingID); err == nil {
+			_ = dao.UpsertAlbumPayload(ctx, s.db, p)
+		} else {
+			slog.Warn("payload build failed after act generation", "wedding_id", weddingID, "error", err)
+		}
+	}
+	return nil
 }
 
 // --- Pass 1: temporal segmentation ---
@@ -317,9 +346,20 @@ func (s *AlbumService) assignActsViaAI(ctx context.Context, wedding *dto.Wedding
 
 	coupleNames := strings.Join([]string(wedding.CoupleNames), " & ")
 	systemPrompt := "You are an expert wedding photo organiser. Analyse photo segments and assign wedding story acts. Return only valid JSON."
-	userPrompt := fmt.Sprintf(`Assign story acts to these wedding photo segments for %s.
+	userPrompt := fmt.Sprintf(`Assign story acts to these wedding photo segments.
 
-Wedding: venue=%s, date=%s, style=%s
+Wedding details:
+- Couple: %s
+- Date: %s
+- Venue: %s
+- Venue type: %s
+- Ceremony style: %s
+- Story style: %s
+- Wedding mood: %s
+- Wedding theme: %s
+- Lighting: %s
+
+Use these details as context: venue type (indoor/outdoor/beach/garden) influences which acts appear early vs late; ceremony style affects the CEREMONY act duration; mood and theme hint at whether JUST_THE_TWO or FINAL_DANCE will be prominent.
 
 Photo segments (JSON):
 %s
@@ -327,13 +367,21 @@ Photo segments (JSON):
 Assign each segment to exactly one act: ANTICIPATION, CEREMONY, FAMILY_BONDS, JUST_THE_TWO, CELEBRATION, FINAL_DANCE
 
 Typical order: ANTICIPATION → CEREMONY → FAMILY_BONDS → JUST_THE_TWO → CELEBRATION → FINAL_DANCE
-Use dominant_label and time_position as primary signals.
+Use dominant_label and time_position as primary signals; use wedding context above as tiebreakers.
 
 Return JSON array only:
 [{"segment_index": 0, "act": "CEREMONY", "confidence": 0.91}]
 
 Confidence: >0.85 = clear signal, 0.60-0.85 = some ambiguity, <0.60 = unclear`,
-		coupleNames, wedding.Venue, wedding.WeddingDate.Format("2006-01-02"), wedding.StoryStyle,
+		coupleNames,
+		wedding.WeddingDate.Format("02 January 2006"),
+		wedding.Venue,
+		wedding.VenueType,
+		wedding.CeremonyStyle,
+		wedding.StoryStyle,
+		wedding.WeddingMood,
+		wedding.WeddingTheme,
+		wedding.Lighting,
 		string(summaryJSON),
 	)
 

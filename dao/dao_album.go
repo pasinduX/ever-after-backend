@@ -71,13 +71,46 @@ func UpdateStoryAct(ctx context.Context, db *mongo.Database, actID string, photo
 		ctx,
 		bson.M{"_id": actID},
 		bson.M{"$set": bson.M{
-			"photo_ids": photoIDs,
-			"confirmed": confirmed,
+			"photo_ids":  photoIDs,
+			"confirmed":  confirmed,
 			"updated_at": time.Now(),
 		}},
 	)
 	if err != nil {
 		return fmt.Errorf("dao UpdateStoryAct: %w", err)
+	}
+	return nil
+}
+
+func UpsertAlbumPayload(ctx context.Context, db *mongo.Database, payload *dto.AlbumPayload) error {
+	_, err := db.Collection("album_payloads").UpdateOne(
+		ctx,
+		bson.M{"album_id": payload.AlbumID},
+		bson.M{"$set": payload},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return fmt.Errorf("dao UpsertAlbumPayload: %w", err)
+	}
+	return nil
+}
+
+func FindAlbumPayload(ctx context.Context, db *mongo.Database, weddingID string) (*dto.AlbumPayload, error) {
+	var payload dto.AlbumPayload
+	err := db.Collection("album_payloads").FindOne(ctx, bson.M{"album_id": weddingID}).Decode(&payload)
+	if err == mongo.ErrNoDocuments {
+		return nil, ErrNoRows
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dao FindAlbumPayload: %w", err)
+	}
+	return &payload, nil
+}
+
+func DeleteAlbumPayload(ctx context.Context, db *mongo.Database, weddingID string) error {
+	_, err := db.Collection("album_payloads").DeleteOne(ctx, bson.M{"album_id": weddingID})
+	if err != nil {
+		return fmt.Errorf("dao DeleteAlbumPayload: %w", err)
 	}
 	return nil
 }

@@ -59,11 +59,11 @@ func main() {
 		os.Exit(1)
 	}
 	paymentSvc := service.NewPaymentService(db, cfg)
-	albumSvc := service.NewAlbumService(db, cfg)
+	payloadSvc := service.NewPayloadService(db)
+	albumSvc := service.NewAlbumService(db, cfg, payloadSvc)
 	albumSvc.Start()
 	enrichSvc := service.NewEnrichmentService(db, cfg, analysisSvc)
 	enrichSvc.Start()
-	payloadSvc := service.NewPayloadService(db)
 	hub := realtime.NewHub()
 
 	app := apiHandlers.NewRouter(cfg, db, authSvc, weddingSvc, guestSvc, whatsappSvc, cardsSvc, uploadSvc, paymentSvc, albumSvc, enrichSvc, payloadSvc, hub)

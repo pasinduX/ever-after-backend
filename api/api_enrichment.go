@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"github.com/storyvows/backend/dao"
 	"github.com/storyvows/backend/service"
 )
 
@@ -40,9 +41,18 @@ func (h *EnrichmentHandler) GetEnrichmentStatus(c *fiber.Ctx) error {
 // GET /:id/album/payload
 func (h *EnrichmentHandler) GetAlbumPayload(c *fiber.Ctx) error {
 	weddingID := c.Params("id")
+
+	// Return the stored payload if available — no recomputation needed.
+	if stored, err := dao.FindAlbumPayload(c.Context(), h.payloadSvc.DB(), weddingID); err == nil {
+		return c.JSON(stored)
+	}
+
+	// Fallback: build on-demand (acts exist but payload wasn't stored yet).
 	payload, err := h.payloadSvc.BuildPayload(c.Context(), weddingID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
+	// Store it so next request is instant.
+	_ = dao.UpsertAlbumPayload(c.Context(), h.payloadSvc.DB(), payload)
 	return c.JSON(payload)
 }
