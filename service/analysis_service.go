@@ -19,6 +19,7 @@ import (
 )
 
 const openAIEndpoint = "https://api.openai.com/v1/responses"
+const analysisWorkers = 20
 
 // AnalysisService processes uploads asynchronously and stores AI metadata.
 type AnalysisService struct {
@@ -34,16 +35,19 @@ func NewAnalysisService(db *mongo.Database, cfg *integrations.Secrets, s3Client 
 		return nil, errors.New("s3 client is required for analysis service")
 	}
 	return &AnalysisService{
-		db:         db,
-		cfg:        cfg,
-		s3:         s3Client,
-		jobs:       make(chan string, 100),
+		db:  db,
+		cfg: cfg,
+		s3:  s3Client,
+		// Buffer sized for a full wedding (3000 photos) without dropping jobs.
+		jobs:       make(chan string, 5000),
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}, nil
 }
 
 func (a *AnalysisService) Start() {
-	go a.worker()
+	for i := 0; i < analysisWorkers; i++ {
+		go a.worker()
+	}
 }
 
 func (a *AnalysisService) Enqueue(uploadID string) {

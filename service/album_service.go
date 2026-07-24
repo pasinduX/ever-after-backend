@@ -27,12 +27,17 @@ type AlbumService struct {
 	httpClient *http.Client
 }
 
+// maxPayloadImages is the cap of photos sent to the AI for layout generation.
+// With 3000 uploads the JSON payload would exceed OpenAI token limits; we sample
+// the highest-quality photos to keep the prompt small while preserving variety.
+const maxPayloadImages = 500
+
 func NewAlbumService(db *mongo.Database, cfg *integrations.Secrets, payload *PayloadService) *AlbumService {
 	return &AlbumService{
 		db:         db,
 		cfg:        cfg,
 		payload:    payload,
-		jobs:       make(chan string, 50),
+		jobs:       make(chan string, 200),
 		httpClient: &http.Client{Timeout: 90 * time.Second},
 	}
 }
@@ -51,7 +56,7 @@ func (s *AlbumService) Enqueue(weddingID string) {
 
 func (s *AlbumService) worker() {
 	for weddingID := range s.jobs {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		if err := s.generateActs(ctx, weddingID); err != nil {
 			slog.Error("album generation failed", "wedding_id", weddingID, "error", err)
 			errMsg := err.Error()
@@ -684,6 +689,20 @@ func preProcessUploads(uploads []*dto.Upload) []*dto.Upload {
 	return out
 }
 
+// sampleBestUploads returns the top-quality photos up to max, preserving the
+// existing sort order within each quality tier so temporal coherence is kept.
+func sampleBestUploads(uploads []*dto.Upload, max int) []*dto.Upload {
+	if len(uploads) <= max {
+		return uploads
+	}
+	ranked := make([]*dto.Upload, len(uploads))
+	copy(ranked, uploads)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return deriveQuality(ranked[i]) > deriveQuality(ranked[j])
+	})
+	return ranked[:max]
+}
+
 func deriveQuality(u *dto.Upload) float64 {
 	if u.Analysis.QualityScore != nil {
 		return *u.Analysis.QualityScore
@@ -723,11 +742,18 @@ func (s *AlbumService) generatePayloadViaAI(
 		return nil, errors.New("no usable photos after pre-processing")
 	}
 
-	// Build uploadMap for later hydration + compact list for the AI (no URLs).
+	// Build uploadMap over ALL filtered uploads so hydratePayload can resolve
+	// every ID that acts may reference, regardless of what the AI sees.
 	uploadMap := make(map[string]*dto.Upload, len(filtered))
-	compactImages := make([]compactImageInfo, 0, len(filtered))
 	for _, u := range filtered {
 		uploadMap[u.ID] = u
+	}
+
+	// Cap the list sent to the AI to avoid exceeding token limits on large weddings.
+	aiImages := sampleBestUploads(filtered, maxPayloadImages)
+
+	compactImages := make([]compactImageInfo, 0, len(aiImages))
+	for _, u := range aiImages {
 		info := compactImageInfo{
 			ID:          u.ID,
 			Category:    string(u.Analysis.Category),

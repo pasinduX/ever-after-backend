@@ -14,7 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-const enrichWorkers = 5
+const enrichWorkers = 20
 const enrichTimeout = 5 * time.Minute
 
 type EnrichmentService struct {
@@ -29,7 +29,7 @@ func NewEnrichmentService(db *mongo.Database, cfg *integrations.Secrets, analysi
 		db:      db,
 		cfg:     cfg,
 		analyis: analysis,
-		jobs:    make(chan string, 50),
+		jobs:    make(chan string, 500),
 	}
 }
 
