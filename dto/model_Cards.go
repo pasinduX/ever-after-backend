@@ -12,27 +12,27 @@ const (
 
 type ThankYouConfig struct {
 	ID        string           `json:"id" bson:"_id,omitempty"`
-	WeddingID string           `json:"wedding_id" bson:"wedding_id"`
+	WeddingID string           `json:"weddingId" bson:"wedding_id"`
 	Template  ThankYouTemplate `json:"template" bson:"template"`
 	Couple    string           `json:"couple" bson:"couple"`
 	Date      string           `json:"date" bson:"date"`
 	Venue     string           `json:"venue" bson:"venue"`
 	Hashtag   string           `json:"hashtag" bson:"hashtag"`
-	HeroImage string           `json:"hero_image" bson:"hero_image"`
+	HeroImage string           `json:"heroImage" bson:"hero_image"`
 	Portrait  string           `json:"portrait" bson:"portrait"`
 	Intro     []string         `json:"intro" bson:"intro"`
 	Message   string           `json:"message" bson:"message"`
 	Signature string           `json:"signature" bson:"signature"`
 	Gallery   []string         `json:"gallery" bson:"gallery"`
 	Closing   string           `json:"closing" bson:"closing"`
-	CreatedAt time.Time        `json:"created_at" bson:"created_at"`
-	UpdatedAt time.Time        `json:"updated_at" bson:"updated_at"`
+	CreatedAt time.Time        `json:"createdAt" bson:"created_at"`
+	UpdatedAt time.Time        `json:"updatedAt" bson:"updated_at"`
 }
 
 type InviteIntro struct {
 	Lines   []string `json:"lines" bson:"lines"`
 	Tagline string   `json:"tagline" bson:"tagline"`
-	BGImage string   `json:"bg_image" bson:"bg_image"`
+	BGImage string   `json:"bgImage" bson:"bg_image"`
 }
 
 type InviteStoryEvent struct {
@@ -54,7 +54,7 @@ type InviteDetails struct {
 }
 
 type InviteCountdown struct {
-	TargetISO string `json:"target_iso" bson:"target_iso"`
+	TargetISO string `json:"targetIso" bson:"target_iso"`
 	Label     string `json:"label" bson:"label"`
 }
 
@@ -71,7 +71,7 @@ type InviteOutro struct {
 
 type InviteConfig struct {
 	ID        string          `json:"id" bson:"_id,omitempty"`
-	WeddingID string          `json:"wedding_id" bson:"wedding_id"`
+	WeddingID string          `json:"weddingId" bson:"wedding_id"`
 	Couple    string          `json:"couple" bson:"couple"`
 	Hashtag   string          `json:"hashtag" bson:"hashtag"`
 	Intro     InviteIntro     `json:"intro" bson:"intro"`
@@ -80,8 +80,8 @@ type InviteConfig struct {
 	Countdown InviteCountdown `json:"countdown" bson:"countdown"`
 	QR        InviteQR        `json:"qr" bson:"qr"`
 	Outro     InviteOutro     `json:"outro" bson:"outro"`
-	CreatedAt time.Time       `json:"created_at" bson:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at" bson:"updated_at"`
+	CreatedAt time.Time       `json:"createdAt" bson:"created_at"`
+	UpdatedAt time.Time       `json:"updatedAt" bson:"updated_at"`
 }
 
 type CreateInviteRequest struct {
@@ -112,7 +112,7 @@ type CreateThankYouRequest struct {
 	Date      string           `json:"date"`
 	Venue     string           `json:"venue"`
 	Hashtag   string           `json:"hashtag"`
-	HeroImage string           `json:"hero_image"`
+	HeroImage string           `json:"heroImage"`
 	Portrait  string           `json:"portrait"`
 	Intro     []string         `json:"intro"`
 	Message   string           `json:"message"`
@@ -127,7 +127,7 @@ type UpdateThankYouRequest struct {
 	Date      *string           `json:"date,omitempty"`
 	Venue     *string           `json:"venue,omitempty"`
 	Hashtag   *string           `json:"hashtag,omitempty"`
-	HeroImage *string           `json:"hero_image,omitempty"`
+	HeroImage *string           `json:"heroImage,omitempty"`
 	Portrait  *string           `json:"portrait,omitempty"`
 	Intro     []string          `json:"intro,omitempty"`
 	Message   *string           `json:"message,omitempty"`

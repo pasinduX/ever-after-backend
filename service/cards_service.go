@@ -15,10 +15,33 @@ import (
 type CardsService struct {
 	db       *mongo.Database
 	analysis *AnalysisService
+	uploads  *UploadService
 }
 
-func NewCardsService(db *mongo.Database, analysis *AnalysisService) *CardsService {
-	return &CardsService{db: db, analysis: analysis}
+func NewCardsService(db *mongo.Database, analysis *AnalysisService, uploads *UploadService) *CardsService {
+	return &CardsService{db: db, analysis: analysis, uploads: uploads}
+}
+
+// refreshInviteURLs re-signs every asset URL in the invite config so callers
+// never receive an expired presigned S3 URL, regardless of when it was stored.
+func (s *CardsService) refreshInviteURLs(cfg *dto.InviteConfig) {
+	if s.uploads == nil || cfg == nil {
+		return
+	}
+	cfg.Intro.BGImage = s.uploads.RefreshURL(cfg.Intro.BGImage)
+}
+
+// refreshThankYouURLs re-signs every asset URL in the thank-you config so
+// callers never receive an expired presigned S3 URL.
+func (s *CardsService) refreshThankYouURLs(cfg *dto.ThankYouConfig) {
+	if s.uploads == nil || cfg == nil {
+		return
+	}
+	cfg.HeroImage = s.uploads.RefreshURL(cfg.HeroImage)
+	cfg.Portrait = s.uploads.RefreshURL(cfg.Portrait)
+	for i, img := range cfg.Gallery {
+		cfg.Gallery[i] = s.uploads.RefreshURL(img)
+	}
 }
 
 func (s *CardsService) ensureWeddingOwner(ctx context.Context, ownerID, weddingID string) error {
@@ -115,6 +138,7 @@ func (s *CardsService) GetInvite(ctx context.Context, ownerID, weddingID string)
 		}
 		return nil, err
 	}
+	s.refreshInviteURLs(cfg)
 	return cfg, nil
 }
 
@@ -207,6 +231,7 @@ func (s *CardsService) GetThankYou(ctx context.Context, ownerID, weddingID strin
 		}
 		return nil, err
 	}
+	s.refreshThankYouURLs(cfg)
 	return cfg, nil
 }
 

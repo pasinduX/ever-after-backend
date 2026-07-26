@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"mime/multipart"
+	neturl "net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -92,6 +93,52 @@ func (s *UploadService) buildFileURL(fileKey string) (string, error) {
 		return rawURL, nil
 	}
 	return req.URL, nil
+}
+
+// RefreshURL re-signs a previously issued file URL using the S3 object key
+// embedded in it, so callers never serve back an expired presigned GET URL.
+// URLs that aren't ours to re-sign (public base URL, external links) are
+// returned unchanged.
+func (s *UploadService) RefreshURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	fileKey, ok := s.extractFileKey(rawURL)
+	if !ok {
+		return rawURL
+	}
+	fresh, err := s.buildFileURL(fileKey)
+	if err != nil || fresh == "" {
+		return rawURL
+	}
+	return fresh
+}
+
+// extractFileKey recovers the S3 object key from a URL previously produced by
+// buildRawFileURL/PresignGetObject, so it can be re-signed at serve time.
+func (s *UploadService) extractFileKey(rawURL string) (string, bool) {
+	if s.cfg.S3Bucket == "" {
+		return "", false
+	}
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+
+	if strings.HasPrefix(u.Host, s.cfg.S3Bucket+".s3.") && strings.HasSuffix(u.Host, ".amazonaws.com") {
+		return strings.TrimPrefix(u.Path, "/"), true
+	}
+
+	if s.cfg.S3Endpoint != "" {
+		if endpointHost, err := neturl.Parse(s.cfg.S3Endpoint); err == nil && endpointHost.Host == u.Host {
+			prefix := "/" + s.cfg.S3Bucket + "/"
+			if strings.HasPrefix(u.Path, prefix) {
+				return strings.TrimPrefix(u.Path, prefix), true
+			}
+		}
+	}
+
+	return "", false
 }
 
 func (s *UploadService) buildRawFileURL(fileKey string) string {

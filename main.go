@@ -52,12 +52,12 @@ func main() {
 		os.Exit(1)
 	}
 	analysisSvc.Start()
-	cardsSvc := service.NewCardsService(db, analysisSvc)
 	uploadSvc, err := service.NewUploadService(db, cfg, s3Client, analysisSvc)
 	if err != nil {
 		slog.Error("failed to init upload service", "error", err)
 		os.Exit(1)
 	}
+	cardsSvc := service.NewCardsService(db, analysisSvc, uploadSvc)
 	paymentSvc := service.NewPaymentService(db, cfg)
 	payloadSvc := service.NewPayloadService(db)
 	albumSvc := service.NewAlbumService(db, cfg, payloadSvc)
