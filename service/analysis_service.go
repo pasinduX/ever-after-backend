@@ -26,6 +26,7 @@ type AnalysisService struct {
 	db         *mongo.Database
 	cfg        *integrations.Secrets
 	s3         *s3.Client
+	urls       *fileURLs
 	jobs       chan string
 	httpClient *http.Client
 }
@@ -35,9 +36,10 @@ func NewAnalysisService(db *mongo.Database, cfg *integrations.Secrets, s3Client 
 		return nil, errors.New("s3 client is required for analysis service")
 	}
 	return &AnalysisService{
-		db:  db,
-		cfg: cfg,
-		s3:  s3Client,
+		db:   db,
+		cfg:  cfg,
+		s3:   s3Client,
+		urls: newFileURLs(cfg, s3Client),
 		// Buffer sized for a full wedding (3000 photos) without dropping jobs.
 		jobs:       make(chan string, 5000),
 		httpClient: &http.Client{Timeout: 60 * time.Second},
@@ -95,7 +97,21 @@ func (a *AnalysisService) processUpload(ctx context.Context, uploadID string) er
 		})
 	}
 
-	result, err := a.analyzePhoto(ctx, upload.FileURL)
+	// upload.FileURL was presigned when the photo was uploaded and may well have
+	// expired while this job sat in the queue. Mint a fresh URL so OpenAI can
+	// actually fetch the image.
+	imageURL := upload.FileURL
+	if key := upload.Storage.FileKey; key != "" {
+		if fresh := a.urls.fresh(key); fresh != "" {
+			imageURL = fresh
+		}
+	} else if upload.FileKey != "" {
+		if fresh := a.urls.fresh(upload.FileKey); fresh != "" {
+			imageURL = fresh
+		}
+	}
+
+	result, err := a.analyzePhoto(ctx, imageURL)
 	if err != nil {
 		errMsg := err.Error()
 		_ = dao.SetUploadAnalysisStatus(ctx, a.db, uploadID, dto.AnalysisStatusFailed, &errMsg)
@@ -202,6 +218,8 @@ Rules:
 		isUsable = *parsed.IsUsable
 	}
 
+	category := categoryFromAnalysis(parsed.EventType, parsed.BasicScene, parsed.FaceCount)
+
 	sceneTags := []string{}
 	if parsed.IndoorOutdoor != "" {
 		sceneTags = append(sceneTags, parsed.IndoorOutdoor)
@@ -212,7 +230,7 @@ Rules:
 
 	analysis := dto.UploadAnalysis{
 		Status:        dto.AnalysisStatusSucceeded,
-		Category:      dto.CategoryOther,
+		Category:      category,
 		DetectedFaces: parsed.FaceCount,
 		SceneTags:     sceneTags,
 		EventType:     parsed.EventType,
@@ -226,7 +244,7 @@ Rules:
 	}
 
 	upload := &dto.Upload{
-		Category:       dto.CategoryOther,
+		Category:       category,
 		AnalysisStatus: dto.AnalysisStatusSucceeded,
 		DetectedFaces:  parsed.FaceCount,
 		SceneTags:      sceneTags,
@@ -244,6 +262,42 @@ Rules:
 	return upload, nil
 }
 
+
+// categoryFromAnalysis turns the model's event_type/basic_scene labels into the
+// UploadCategory the album grouping actually switches on. Without this every
+// upload stays CategoryOther and assignActsByCategory collapses the whole
+// wedding into a single "Anticipation" act.
+func categoryFromAnalysis(eventType, basicScene string, faceCount *int) dto.UploadCategory {
+	isGroup := faceCount != nil && *faceCount >= 3
+
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "ceremony":
+		return dto.CategoryCeremony
+	case "reception":
+		return dto.CategoryDancing
+	case "getting_ready":
+		return dto.CategoryCandid
+	case "pre_shoot":
+		// Staged portraits: a group shot reads as family, a couple shot as candid.
+		if isGroup {
+			return dto.CategoryFamily
+		}
+		return dto.CategoryCandid
+	}
+
+	// event_type was absent or "other" — fall back to the coarser scene label.
+	switch strings.ToLower(strings.TrimSpace(basicScene)) {
+	case "ceremony":
+		return dto.CategoryCeremony
+	case "people":
+		if isGroup {
+			return dto.CategoryFamily
+		}
+		return dto.CategoryCandid
+	}
+
+	return dto.CategoryOther
+}
 
 func sanitizeOpenAIJSON(text string) string {
 	text = strings.TrimSpace(text)

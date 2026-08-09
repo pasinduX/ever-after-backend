@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/sendgrid/sendgrid-go"
-	"github.com/sendgrid/sendgrid-go/helpers/mail"
+	"github.com/resend/resend-go/v3"
 	"github.com/storyvows/backend/dao"
 	"github.com/storyvows/backend/dto"
 	apperrors "github.com/storyvows/backend/errors"
@@ -195,33 +193,27 @@ func (s *AuthService) issueTokens(ctx context.Context, user *dto.User) (*dto.Aut
 }
 
 func (s *AuthService) sendVerificationEmail(email, code string) error {
-	from := mail.NewEmail("Story Vows", s.cfg.SendGridFromEmail)
-	to := mail.NewEmail("", email)
-	subject := "Verify your Story Vows account"
+	client := resend.NewClient(s.cfg.ResendAPIKey)
+
+	subject := "Verify your MoonVeils account"
 	plainTextContent := fmt.Sprintf("Your verification code is %s. It expires in 15 minutes.", code)
 	htmlContent := fmt.Sprintf("<p>Your verification code is <strong>%s</strong>. It expires in 15 minutes.</p>", code)
-	message := mail.NewSingleEmail(from, subject, to, plainTextContent, htmlContent)
 
-	request := sendgrid.GetRequest(s.cfg.SendGridAPIKey, "/v3/mail/send", "")
-	request.Method = "POST"
-	if strings.EqualFold(s.cfg.SendGridDataResidency, "EU") {
-		var err error
-		request, err = sendgrid.SetDataResidency(request, "eu")
-		if err != nil {
-			return err
-		}
+	params := &resend.SendEmailRequest{
+		From:    s.cfg.ResendFromEmail,
+		To:      []string{email},
+		Subject: subject,
+		Html:    htmlContent,
+		Text:    plainTextContent,
 	}
-	request.Body = mail.GetRequestBody(message)
 
-	response, err := sendgrid.API(request)
+	sent, err := client.Emails.Send(params)
 	if err != nil {
-		slog.Error("sendgrid send failed", "email", email, "error", err)
-		return err
+		slog.Error("resend send failed", "email", email, "error", err)
+		return fmt.Errorf("resend error: %w", err)
 	}
-	if response.StatusCode >= 400 {
-		slog.Error("sendgrid send failed", "email", email, "status", response.StatusCode, "body", response.Body)
-		return fmt.Errorf("sendgrid error: %d", response.StatusCode)
-	}
+
+	slog.Info("verification email sent", "email", email, "messageID", sent.Id)
 	return nil
 }
 

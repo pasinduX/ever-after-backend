@@ -38,7 +38,6 @@ func main() {
 	}()
 
 	authSvc := service.NewAuthService(db, cfg)
-	weddingSvc := service.NewWeddingService(db, cfg)
 	guestSvc := service.NewGuestService(db)
 	whatsappSvc := service.NewWhatsAppService(cfg)
 	s3Client, err := service.NewS3Client(cfg)
@@ -57,6 +56,8 @@ func main() {
 		slog.Error("failed to init upload service", "error", err)
 		os.Exit(1)
 	}
+	// Built after uploadSvc so deleting a wedding can also clear its S3 objects.
+	weddingSvc := service.NewWeddingService(db, cfg, uploadSvc)
 	cardsSvc := service.NewCardsService(db, analysisSvc, uploadSvc)
 	paymentSvc := service.NewPaymentService(db, cfg)
 	payloadSvc := service.NewPayloadService(db)

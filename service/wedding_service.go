@@ -18,13 +18,25 @@ import (
 type WeddingService struct {
 	db  *mongo.Database
 	cfg *integrations.Secrets
+	// uploads is used to clear stored objects on delete. Optional: a nil value
+	// simply skips object cleanup.
+	uploads *UploadService
 }
 
-func NewWeddingService(db *mongo.Database, cfg *integrations.Secrets) *WeddingService {
-	return &WeddingService{db: db, cfg: cfg}
+func NewWeddingService(db *mongo.Database, cfg *integrations.Secrets, uploads *UploadService) *WeddingService {
+	return &WeddingService{db: db, cfg: cfg, uploads: uploads}
 }
 
 func (s *WeddingService) Create(ctx context.Context, ownerID string, req dto.CreateWeddingRequest) (*dto.Wedding, error) {
+	// Check if user already has an active wedding
+	existingWeddings, err := dao.FindWeddingsByOwner(ctx, s.db, ownerID)
+	if err != nil && !errors.Is(err, dao.ErrNoRows) {
+		return nil, fmt.Errorf("error checking existing weddings: %w", err)
+	}
+	if len(existingWeddings) > 0 {
+		return nil, errors.New("you can only have one wedding per account. Please delete your existing wedding to create a new one")
+	}
+
 	if len(req.CoupleNames) == 0 {
 		return nil, errors.New("couple_names is required")
 	}
@@ -218,11 +230,24 @@ func (s *WeddingService) Update(ctx context.Context, weddingID, ownerID string, 
 	return w, nil
 }
 
+// Delete permanently removes a wedding and everything scoped to it.
+//
+// This used to call DeactivateWedding, which only set is_active=false. Since
+// FindWeddingsByOwner doesn't filter on that flag, the "deleted" wedding stayed
+// in the owner's list forever — and because Create rejects a second wedding, the
+// owner was left unable to delete it or replace it.
 func (s *WeddingService) Delete(ctx context.Context, weddingID, ownerID string) error {
 	if _, err := s.Get(ctx, weddingID, ownerID); err != nil {
 		return err
 	}
-	return dao.DeactivateWedding(ctx, s.db, weddingID)
+
+	// Clear stored objects first: the upload rows are the only record of which
+	// S3 keys belong to this wedding.
+	if s.uploads != nil {
+		s.uploads.DeleteObjectsForWedding(ctx, weddingID)
+	}
+
+	return dao.DeleteWedding(ctx, s.db, weddingID)
 }
 
 func (s *WeddingService) SetPrivacy(ctx context.Context, weddingID, ownerID string, req dto.PrivacyRequest) error {

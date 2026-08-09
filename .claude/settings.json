@@ -5,7 +5,9 @@
       "Bash(go mod *)",
       "Bash(go build *)",
       "Bash(ls /Users/pasindurathnayaka/Documents/CIU/)",
-      "Read(//Users/pasindurathnayaka/Documents/CIU/**)"
+      "Read(//Users/pasindurathnayaka/Documents/CIU/**)",
+      "Bash(grep -E \"\\\\.\\(go|mod|yaml|json|yml\\)$\")",
+      "Bash(xargs basename -a)"
     ]
   }
 }
