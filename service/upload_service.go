@@ -7,20 +7,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"io"
 	"log/slog"
 	"mime/multipart"
-	neturl "net/url"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/corona10/goimagehash"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/google/uuid"
 	exiflib "github.com/rwcarlsen/goexif/exif"
 	"github.com/storyvows/backend/dao"
@@ -43,119 +39,27 @@ var allowedMimeTypes = map[string]dto.FileType{
 }
 
 type UploadService struct {
-	db        *mongo.Database
-	cfg       *integrations.Secrets
-	s3        *s3.Client
-	presigner *s3.PresignClient
-	analysis  *AnalysisService
+	db       *mongo.Database
+	cfg      *integrations.Secrets
+	s3       *s3.Client
+	urls     *fileURLs
+	analysis *AnalysisService
 }
 
 func NewUploadService(db *mongo.Database, cfg *integrations.Secrets, s3Client *s3.Client, analysis *AnalysisService) (*UploadService, error) {
-	presigner := s3.NewPresignClient(s3Client)
-	return &UploadService{db: db, cfg: cfg, s3: s3Client, presigner: presigner, analysis: analysis}, nil
+	return &UploadService{db: db, cfg: cfg, s3: s3Client, urls: newFileURLs(cfg, s3Client), analysis: analysis}, nil
 }
 
 // FreshURL generates a new presigned GET URL for the given S3 file key.
 // Call this at serve time so URLs are never stale when delivered to the client.
-func (s *UploadService) FreshURL(fileKey string) string {
-	if fileKey == "" {
-		return ""
-	}
-	url, err := s.buildFileURL(fileKey)
-	if err != nil {
-		return ""
-	}
-	return url
-}
-
-func (s *UploadService) buildFileURL(fileKey string) (string, error) {
-	if s.cfg.S3Bucket == "" {
-		return "", errors.New("s3 bucket is not configured")
-	}
-
-	if s.cfg.S3PublicBaseURL != "" {
-		return fmt.Sprintf("%s/%s", strings.TrimRight(s.cfg.S3PublicBaseURL, "/"), fileKey), nil
-	}
-
-	rawURL := s.buildRawFileURL(fileKey)
-	if s.s3 == nil || s.presigner == nil {
-		return rawURL, nil
-	}
-
-	req, err := s.presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(s.cfg.S3Bucket),
-		Key:    aws.String(fileKey),
-	}, func(po *s3.PresignOptions) {
-		po.Expires = s.cfg.S3PresignTTL
-	})
-	if err != nil {
-		slog.Warn("failed to create presigned url, falling back to raw public url", "error", err.Error(), "file_key", fileKey)
-		return rawURL, nil
-	}
-	return req.URL, nil
-}
+func (s *UploadService) FreshURL(fileKey string) string { return s.urls.fresh(fileKey) }
 
 // RefreshURL re-signs a previously issued file URL using the S3 object key
 // embedded in it, so callers never serve back an expired presigned GET URL.
-// URLs that aren't ours to re-sign (public base URL, external links) are
-// returned unchanged.
-func (s *UploadService) RefreshURL(rawURL string) string {
-	if rawURL == "" {
-		return ""
-	}
-	fileKey, ok := s.extractFileKey(rawURL)
-	if !ok {
-		return rawURL
-	}
-	fresh, err := s.buildFileURL(fileKey)
-	if err != nil || fresh == "" {
-		return rawURL
-	}
-	return fresh
-}
+// URLs that aren't ours to re-sign are returned unchanged.
+func (s *UploadService) RefreshURL(rawURL string) string { return s.urls.refresh(rawURL) }
 
-// extractFileKey recovers the S3 object key from a URL previously produced by
-// buildRawFileURL/PresignGetObject, so it can be re-signed at serve time.
-func (s *UploadService) extractFileKey(rawURL string) (string, bool) {
-	if s.cfg.S3Bucket == "" {
-		return "", false
-	}
-	u, err := neturl.Parse(rawURL)
-	if err != nil {
-		return "", false
-	}
-
-	if strings.HasPrefix(u.Host, s.cfg.S3Bucket+".s3.") && strings.HasSuffix(u.Host, ".amazonaws.com") {
-		return strings.TrimPrefix(u.Path, "/"), true
-	}
-
-	if s.cfg.S3Endpoint != "" {
-		if endpointHost, err := neturl.Parse(s.cfg.S3Endpoint); err == nil && endpointHost.Host == u.Host {
-			prefix := "/" + s.cfg.S3Bucket + "/"
-			if strings.HasPrefix(u.Path, prefix) {
-				return strings.TrimPrefix(u.Path, prefix), true
-			}
-		}
-	}
-
-	return "", false
-}
-
-func (s *UploadService) buildRawFileURL(fileKey string) string {
-	if s.cfg.S3PublicBaseURL != "" {
-		return fmt.Sprintf("%s/%s", strings.TrimRight(s.cfg.S3PublicBaseURL, "/"), fileKey)
-	}
-
-	if s.cfg.S3Endpoint != "" {
-		return fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.cfg.S3Endpoint, "/"), s.cfg.S3Bucket, fileKey)
-	}
-
-	if s.cfg.S3Region == "us-east-1" {
-		return fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s.cfg.S3Bucket, fileKey)
-	}
-
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.cfg.S3Bucket, s.cfg.S3Region, fileKey)
-}
+func (s *UploadService) buildFileURL(fileKey string) (string, error) { return s.urls.build(fileKey) }
 
 func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
 	mimeType := header.Header.Get("Content-Type")
@@ -173,105 +77,16 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 	}
 
 	if limit := wedding.UploadLimit(); limit != -1 {
-		count, _ := dao.CountUploadsByWedding(ctx, s.db, weddingID)
+		count, err := dao.CountUploadsByWedding(ctx, s.db, weddingID)
+		if err != nil {
+			return nil, fmt.Errorf("count uploads: %w", err)
+		}
 		if count >= limit {
 			return nil, apperrors.ErrLimitReached
 		}
 	}
 
-	fileBytes, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
-	}
-
-	exifData := extractEXIF(fileBytes)
-	contentHash := computeContentHash(fileBytes)
-	dims, _ := extractDimensions(fileBytes)
-	pHash, _ := computePHash(fileBytes)
-
-	ext := strings.ToLower(filepath.Ext(header.Filename))
-	fileKey := fmt.Sprintf("weddings/%s/%s%s", weddingID, uuid.NewString(), ext)
-
-	_, err = s.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.cfg.S3Bucket),
-		Key:         aws.String(fileKey),
-		Body:        bytes.NewReader(fileBytes),
-		ContentType: aws.String(mimeType),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("upload to storage: %w", err)
-	}
-
-	fileURL, err := s.buildFileURL(fileKey)
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now()
-	timeline := dto.UploadTimeline{UploadedAt: now}
-	if exifData.CapturedAt != nil {
-		timeline.CapturedAt = exifData.CapturedAt
-	}
-
-	upload := &dto.Upload{
-		ID:             uuid.NewString(),
-		WeddingID:      weddingID,
-		FileURL:        fileURL,
-		FileKey:        fileKey,
-		FileType:       fileType,
-		MimeType:       mimeType,
-		SizeBytes:      header.Size,
-		ContentHash:    contentHash,
-		Category:       dto.CategoryOther,
-		AnalysisStatus: dto.AnalysisStatusPending,
-		IsApproved:     true,
-		UploadedAt:     now,
-		Storage: dto.UploadStorage{
-			OriginalURL:  fileURL,
-			MediumURL:    fileURL,
-			ThumbnailURL: fileURL,
-			FileKey:      fileKey,
-		},
-		Metadata: dto.UploadMetadata{
-			MimeType:  mimeType,
-			SizeBytes: header.Size,
-			Width:       func() *int { if dims.Width > 0 { v := dims.Width; return &v }; return nil }(),
-			Height:      func() *int { if dims.Height > 0 { v := dims.Height; return &v }; return nil }(),
-			AspectRatio: func() *float64 { if dims.AspectRatio > 0 { v := dims.AspectRatio; return &v }; return nil }(),
-			Orientation: func() *string { if dims.Orientation != "" { v := dims.Orientation; return &v }; return nil }(),
-		},
-		Timeline:    timeline,
-		EXIF:        exifData,
-		PHash:       pHash,
-		Orientation: func() *string { if dims.Orientation != "" { v := dims.Orientation; return &v }; return nil }(),
-		Analysis: dto.UploadAnalysis{
-			Status:   dto.AnalysisStatusPending,
-			Category: dto.CategoryOther,
-			Processing: dto.ProcessingStages{
-				Thumbnail:      dto.AnalysisStatusPending,
-				AIAnalysis:     dto.AnalysisStatusPending,
-				Moderation:     dto.AnalysisStatusPending,
-				DuplicateCheck: dto.AnalysisStatusPending,
-			},
-		},
-		Moderation: dto.UploadModeration{
-			IsApproved: true,
-		},
-	}
-	if guestName != "" {
-		upload.GuestName = &guestName
-	}
-	if exifData.CapturedAt != nil {
-		upload.TakenAt = exifData.CapturedAt
-	}
-
-	if err := dao.CreateUpload(ctx, s.db, upload); err != nil {
-		return nil, err
-	}
-	if s.analysis != nil {
-		s.analysis.Enqueue(upload.ID)
-	}
-	return upload, nil
+	return s.store(ctx, weddingID, fmt.Sprintf("weddings/%s", weddingID), file, header, mimeType, fileType, guestName)
 }
 
 func (s *UploadService) GuestUploadBySlug(ctx context.Context, slug string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
@@ -312,6 +127,22 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 		return nil, apperrors.ErrInvalidFile
 	}
 
+	return s.store(ctx, folderID, strings.Trim(folderID, "/"), file, header, mimeType, fileType, "")
+}
+
+// store is the single persistence path shared by every upload entry point: read
+// the bytes once, derive everything from one decode, push the original plus its
+// derivatives to S3, then record the row and queue analysis.
+func (s *UploadService) store(
+	ctx context.Context,
+	weddingID string,
+	keyPrefix string,
+	file multipart.File,
+	header *multipart.FileHeader,
+	mimeType string,
+	fileType dto.FileType,
+	guestName string,
+) (*dto.Upload, error) {
 	fileBytes, err := io.ReadAll(file)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
@@ -319,19 +150,18 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 
 	exifData := extractEXIF(fileBytes)
 	contentHash := computeContentHash(fileBytes)
-	dims, _ := extractDimensions(fileBytes)
-	pHash, _ := computePHash(fileBytes)
+
+	// One decode covers dimensions, perceptual hash and both derivatives.
+	var media mediaAnalysis
+	if fileType == dto.FileTypePhoto {
+		media = analyseImage(fileBytes)
+	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	fileKey := fmt.Sprintf("%s/%s%s", strings.Trim(folderID, "/"), uuid.NewString(), ext)
+	baseName := uuid.NewString()
+	fileKey := fmt.Sprintf("%s/%s%s", keyPrefix, baseName, ext)
 
-	_, err = s.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.cfg.S3Bucket),
-		Key:         aws.String(fileKey),
-		Body:        bytes.NewReader(fileBytes),
-		ContentType: aws.String(mimeType),
-	})
-	if err != nil {
+	if err := s.putObject(ctx, fileKey, fileBytes, mimeType); err != nil {
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 
@@ -340,15 +170,37 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 		return nil, err
 	}
 
+	// Derivatives are an optimisation, never a hard requirement — if one fails
+	// to store we serve the original for that size rather than failing the whole
+	// upload the guest is waiting on.
+	thumbnailURL := fileURL
+	mediumURL := fileURL
+	if key, ok := s.putDerivative(ctx, keyPrefix, baseName, "thumb", media.Thumbnail); ok {
+		if url, err := s.buildFileURL(key); err == nil {
+			thumbnailURL = url
+		}
+	}
+	if key, ok := s.putDerivative(ctx, keyPrefix, baseName, "medium", media.Medium); ok {
+		if url, err := s.buildFileURL(key); err == nil {
+			mediumURL = url
+		}
+	}
+
 	now := time.Now()
 	timeline := dto.UploadTimeline{UploadedAt: now}
 	if exifData.CapturedAt != nil {
 		timeline.CapturedAt = exifData.CapturedAt
 	}
 
+	thumbStage := dto.AnalysisStatusSucceeded
+	if !media.Decoded {
+		thumbStage = dto.AnalysisStatusPending
+	}
+
+	dims := media.Dims
 	upload := &dto.Upload{
 		ID:             uuid.NewString(),
-		WeddingID:      folderID,
+		WeddingID:      weddingID,
 		FileURL:        fileURL,
 		FileKey:        fileKey,
 		FileType:       fileType,
@@ -361,27 +213,27 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 		UploadedAt:     now,
 		Storage: dto.UploadStorage{
 			OriginalURL:  fileURL,
-			MediumURL:    fileURL,
-			ThumbnailURL: fileURL,
+			MediumURL:    mediumURL,
+			ThumbnailURL: thumbnailURL,
 			FileKey:      fileKey,
 		},
 		Metadata: dto.UploadMetadata{
 			MimeType:    mimeType,
 			SizeBytes:   header.Size,
-			Width:       func() *int { if dims.Width > 0 { v := dims.Width; return &v }; return nil }(),
-			Height:      func() *int { if dims.Height > 0 { v := dims.Height; return &v }; return nil }(),
-			AspectRatio: func() *float64 { if dims.AspectRatio > 0 { v := dims.AspectRatio; return &v }; return nil }(),
-			Orientation: func() *string { if dims.Orientation != "" { v := dims.Orientation; return &v }; return nil }(),
+			Width:       intPtrOrNil(dims.Width),
+			Height:      intPtrOrNil(dims.Height),
+			AspectRatio: floatPtrOrNil(dims.AspectRatio),
+			Orientation: stringPtrOrNil(dims.Orientation),
 		},
 		Timeline:    timeline,
 		EXIF:        exifData,
-		PHash:       pHash,
-		Orientation: func() *string { if dims.Orientation != "" { v := dims.Orientation; return &v }; return nil }(),
+		PHash:       media.PHash,
+		Orientation: stringPtrOrNil(dims.Orientation),
 		Analysis: dto.UploadAnalysis{
 			Status:   dto.AnalysisStatusPending,
 			Category: dto.CategoryOther,
 			Processing: dto.ProcessingStages{
-				Thumbnail:      dto.AnalysisStatusPending,
+				Thumbnail:      thumbStage,
 				AIAnalysis:     dto.AnalysisStatusPending,
 				Moderation:     dto.AnalysisStatusPending,
 				DuplicateCheck: dto.AnalysisStatusPending,
@@ -390,6 +242,9 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 		Moderation: dto.UploadModeration{
 			IsApproved: true,
 		},
+	}
+	if guestName != "" {
+		upload.GuestName = &guestName
 	}
 	if exifData.CapturedAt != nil {
 		upload.TakenAt = exifData.CapturedAt
@@ -401,8 +256,54 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 	if s.analysis != nil {
 		s.analysis.Enqueue(upload.ID)
 	}
-
 	return upload, nil
+}
+
+func (s *UploadService) putObject(ctx context.Context, key string, body []byte, contentType string) error {
+	_, err := s.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.cfg.S3Bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String(contentType),
+	})
+	return err
+}
+
+// putDerivative stores a downscaled variant. It reports false when there was
+// nothing to store (small source, or an image we couldn't decode) or the put
+// failed, in which case the caller keeps pointing at the original.
+func (s *UploadService) putDerivative(ctx context.Context, keyPrefix, baseName, variant string, body []byte) (string, bool) {
+	if len(body) == 0 {
+		return "", false
+	}
+	key := fmt.Sprintf("%s/%s_%s.jpg", keyPrefix, baseName, variant)
+	if err := s.putObject(ctx, key, body, "image/jpeg"); err != nil {
+		slog.Warn("failed to store image derivative, falling back to original",
+			"error", err.Error(), "variant", variant, "key", key)
+		return "", false
+	}
+	return key, true
+}
+
+func intPtrOrNil(v int) *int {
+	if v <= 0 {
+		return nil
+	}
+	return &v
+}
+
+func floatPtrOrNil(v float64) *float64 {
+	if v <= 0 {
+		return nil
+	}
+	return &v
+}
+
+func stringPtrOrNil(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // --- file helpers ---
@@ -434,48 +335,74 @@ func computeContentHash(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-type imageDimensions struct {
-	Width       int
-	Height      int
-	AspectRatio float64
-	Orientation string
-}
-
-func extractDimensions(data []byte) (imageDimensions, error) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return imageDimensions{}, err
-	}
-	d := imageDimensions{Width: cfg.Width, Height: cfg.Height}
-	if cfg.Height > 0 {
-		d.AspectRatio = float64(cfg.Width) / float64(cfg.Height)
-	}
-	if cfg.Width >= cfg.Height {
-		d.Orientation = "landscape"
-	} else {
-		d.Orientation = "portrait"
-	}
-	return d, nil
-}
-
-func computePHash(data []byte) (string, error) {
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	h, err := goimagehash.PerceptionHash(img)
-	if err != nil {
-		return "", err
-	}
-	return h.ToString(), nil
-}
-
 func (s *UploadService) ListForWedding(ctx context.Context, weddingID string) ([]*dto.Upload, error) {
 	return dao.FindUploadsByWedding(ctx, s.db, weddingID)
 }
 
 func (s *UploadService) SetApproval(ctx context.Context, uploadID string, approved bool) error {
 	return dao.SetUploadApproval(ctx, s.db, uploadID, approved)
+}
+
+// DeleteObjectsForWedding removes every stored object belonging to a wedding,
+// originals and derivatives alike.
+//
+// Best-effort by design: a leftover object costs pennies, whereas returning an
+// error here would block the owner from ever completing the delete. It must run
+// before the upload rows are removed, since the rows are the only record of
+// which keys exist.
+func (s *UploadService) DeleteObjectsForWedding(ctx context.Context, weddingID string) {
+	if s.s3 == nil || s.cfg.S3Bucket == "" {
+		return
+	}
+
+	uploads, err := dao.FindUploadsByWedding(ctx, s.db, weddingID)
+	if err != nil {
+		slog.Warn("could not list uploads for object cleanup", "error", err.Error(), "wedding_id", weddingID)
+		return
+	}
+
+	seen := make(map[string]struct{}, len(uploads)*3)
+	var keys []types.ObjectIdentifier
+	add := func(key string) {
+		if key == "" {
+			return
+		}
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, types.ObjectIdentifier{Key: aws.String(key)})
+	}
+
+	for _, u := range uploads {
+		add(u.FileKey)
+		add(u.Storage.FileKey)
+		// Derivative keys aren't stored directly, but they're recoverable from
+		// the URLs we issued for them.
+		if key, ok := s.urls.extractKey(u.Storage.ThumbnailURL); ok {
+			add(key)
+		}
+		if key, ok := s.urls.extractKey(u.Storage.MediumURL); ok {
+			add(key)
+		}
+	}
+
+	// S3 caps DeleteObjects at 1000 keys per request.
+	const batchSize = 1000
+	for start := 0; start < len(keys); start += batchSize {
+		end := start + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		_, err := s.s3.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.cfg.S3Bucket),
+			Delete: &types.Delete{Objects: keys[start:end], Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			slog.Warn("failed to delete stored objects for wedding",
+				"error", err.Error(), "wedding_id", weddingID, "batch_start", start)
+		}
+	}
 }
 
 func (s *UploadService) Delete(ctx context.Context, uploadID string) error {

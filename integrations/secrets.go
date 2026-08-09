@@ -27,9 +27,8 @@ type Secrets struct {
 	StripeHeritagePrice  int64
 	StripeLegacyPrice    int64
 
-	SendGridAPIKey        string
-	SendGridFromEmail     string
-	SendGridDataResidency string
+	ResendAPIKey  string
+	ResendFromEmail string
 
 	TwilioAccountSID   string
 	TwilioAuthToken    string
@@ -71,9 +70,8 @@ func Load() (*Secrets, error) {
 		StripeElopementPrice:  parseInt64(getEnv("STRIPE_ELOPEMENT_PRICE", "19900")),
 		StripeHeritagePrice:   parseInt64(getEnv("STRIPE_HERITAGE_PRICE", "44900")),
 		StripeLegacyPrice:     parseInt64(getEnv("STRIPE_LEGACY_PRICE", "79900")),
-		SendGridAPIKey:        requireEnv("SENDGRID_API_KEY"),
-		SendGridFromEmail:     requireEnv("SENDGRID_FROM_EMAIL"),
-		SendGridDataResidency: getEnv("SENDGRID_DATA_RESIDENCY", ""),
+		ResendAPIKey:    requireEnv("RESEND_API_KEY"),
+		ResendFromEmail: getEnv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
 		TwilioAccountSID:      getEnv("TWILIO_ACCOUNT_SID", ""),
 		TwilioAuthToken:       getEnv("TWILIO_AUTH_TOKEN", ""),
 		TwilioWhatsAppFrom:    getEnv("TWILIO_WHATSAPP_FROM", ""),
