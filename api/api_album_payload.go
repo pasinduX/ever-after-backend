@@ -9,41 +9,18 @@ import (
 	"github.com/storyvows/backend/service"
 )
 
-type EnrichmentHandler struct {
-	enrichSvc  *service.EnrichmentService
+// AlbumPayloadHandler serves the stored block-based album payload.
+type AlbumPayloadHandler struct {
 	payloadSvc *service.PayloadService
 	uploadSvc  *service.UploadService
 }
 
-func NewEnrichmentHandler(enrichSvc *service.EnrichmentService, payloadSvc *service.PayloadService, uploadSvc *service.UploadService) *EnrichmentHandler {
-	return &EnrichmentHandler{enrichSvc: enrichSvc, payloadSvc: payloadSvc, uploadSvc: uploadSvc}
-}
-
-// POST /:id/enrich — kick off post-wedding deep analysis
-func (h *EnrichmentHandler) StartEnrichment(c *fiber.Ctx) error {
-	weddingID := c.Params("id")
-	if weddingID == "" {
-		return fiber.ErrBadRequest
-	}
-	h.enrichSvc.Enqueue(weddingID)
-	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-		"message": "enrichment started",
-		"wedding_id": weddingID,
-	})
-}
-
-// GET /:id/enrich/status
-func (h *EnrichmentHandler) GetEnrichmentStatus(c *fiber.Ctx) error {
-	weddingID := c.Params("id")
-	cfg, err := h.enrichSvc.GetStatus(c.Context(), weddingID)
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-	}
-	return c.JSON(cfg)
+func NewAlbumPayloadHandler(payloadSvc *service.PayloadService, uploadSvc *service.UploadService) *AlbumPayloadHandler {
+	return &AlbumPayloadHandler{payloadSvc: payloadSvc, uploadSvc: uploadSvc}
 }
 
 // GET /:id/album/payload
-func (h *EnrichmentHandler) GetAlbumPayload(c *fiber.Ctx) error {
+func (h *AlbumPayloadHandler) GetAlbumPayload(c *fiber.Ctx) error {
 	weddingID := c.Params("id")
 
 	var payload *dto.AlbumPayload
@@ -68,7 +45,7 @@ func (h *EnrichmentHandler) GetAlbumPayload(c *fiber.Ctx) error {
 
 // refreshPayloadURLs replaces every AssetObject URL in the payload with a
 // freshly signed URL generated from the upload's stored S3 file key.
-func (h *EnrichmentHandler) refreshPayloadURLs(ctx context.Context, payload *dto.AlbumPayload) {
+func (h *AlbumPayloadHandler) refreshPayloadURLs(ctx context.Context, payload *dto.AlbumPayload) {
 	if h.uploadSvc == nil {
 		return
 	}

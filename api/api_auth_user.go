@@ -48,6 +48,33 @@ func SignIn(svc *service.AuthService) fiber.Handler {
 	}
 }
 
+func ForgotPassword(svc *service.AuthService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req dto.ForgotPasswordRequest
+		if err := c.BodyParser(&req); err != nil {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		}
+		if err := svc.RequestPasswordReset(c.UserContext(), req.Email); err != nil {
+			return utils.SendServiceError(c, err)
+		}
+		return utils.SendSuccessResponse(c, "if an account exists for that email, a reset code has been sent", nil)
+	}
+}
+
+func ResetPassword(svc *service.AuthService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req dto.ResetPasswordRequest
+		if err := c.BodyParser(&req); err != nil {
+			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		}
+		resp, err := svc.ResetPassword(c.UserContext(), req)
+		if err != nil {
+			return utils.SendServiceError(c, err)
+		}
+		return utils.SendJSON(c, fiber.StatusOK, resp)
+	}
+}
+
 func Refresh(svc *service.AuthService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req dto.RefreshRequest

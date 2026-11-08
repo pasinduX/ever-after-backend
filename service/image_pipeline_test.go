@@ -35,7 +35,7 @@ func decodeDims(t *testing.T, data []byte) (int, int) {
 func TestAnalyseImageLandscapeProducesBoundedDerivatives(t *testing.T) {
 	src := makeJPEG(t, 4000, 3000)
 
-	got := analyseImage(src)
+	got := analyseImage(src, 1)
 
 	if !got.Decoded {
 		t.Fatal("expected image to decode")
@@ -73,7 +73,7 @@ func TestAnalyseImageLandscapeProducesBoundedDerivatives(t *testing.T) {
 }
 
 func TestAnalyseImagePortraitConstrainsLongEdge(t *testing.T) {
-	got := analyseImage(makeJPEG(t, 1200, 3000))
+	got := analyseImage(makeJPEG(t, 1200, 3000), 1)
 
 	if !got.Decoded {
 		t.Fatal("expected image to decode")
@@ -90,7 +90,7 @@ func TestAnalyseImagePortraitConstrainsLongEdge(t *testing.T) {
 
 // A source already within budget shouldn't cost an extra S3 object.
 func TestAnalyseImageSkipsDerivativesForSmallSource(t *testing.T) {
-	got := analyseImage(makeJPEG(t, 300, 200))
+	got := analyseImage(makeJPEG(t, 300, 200), 1)
 
 	if !got.Decoded {
 		t.Fatal("expected image to decode")
@@ -106,7 +106,7 @@ func TestAnalyseImageSkipsDerivativesForSmallSource(t *testing.T) {
 // Formats with no registered decoder (HEIC/AVIF) must degrade to "serve the
 // original", not fail the upload.
 func TestAnalyseImageUndecodableIsNotFatal(t *testing.T) {
-	got := analyseImage([]byte("not an image"))
+	got := analyseImage([]byte("not an image"), 1)
 
 	if got.Decoded {
 		t.Error("expected Decoded=false for undecodable input")
@@ -116,5 +116,51 @@ func TestAnalyseImageUndecodableIsNotFatal(t *testing.T) {
 	}
 	if got.PHash != "" {
 		t.Error("expected no perceptual hash for undecodable input")
+	}
+}
+
+// Phones store many photos sideways and rely on the EXIF tag. Our derivatives
+// drop that tag, so they must come out upright, and the stored dimensions must
+// describe the photo as it is displayed.
+func TestAnalyseImageAppliesEXIFRotation(t *testing.T) {
+	got := analyseImage(makeJPEG(t, 4000, 3000), 6) // stored landscape, displayed portrait
+
+	if got.Dims.Width != 3000 || got.Dims.Height != 4000 || got.Dims.Orientation != "portrait" {
+		t.Errorf("dims = %dx%d %s, want 3000x4000 portrait", got.Dims.Width, got.Dims.Height, got.Dims.Orientation)
+	}
+	mw, mh := decodeDims(t, got.Medium)
+	if mw != 1200 || mh != mediumMaxDim {
+		t.Errorf("medium = %dx%d, want 1200x%d (upright)", mw, mh, mediumMaxDim)
+	}
+	tw, th := decodeDims(t, got.Thumbnail)
+	if tw >= th {
+		t.Errorf("thumbnail = %dx%d, want portrait", tw, th)
+	}
+}
+
+// A small sideways original has no medium rendition to fix it, so it gets an
+// upright copy: the AI analysis and EXIF-unaware clients read that one.
+func TestAnalyseImageUprightCopyForSmallSidewaysSource(t *testing.T) {
+	got := analyseImage(makeJPEG(t, 300, 200), 8)
+
+	if got.Medium == nil {
+		t.Fatal("expected an upright medium copy")
+	}
+	if w, h := decodeDims(t, got.Medium); w != 200 || h != 300 {
+		t.Errorf("medium = %dx%d, want 200x300", w, h)
+	}
+}
+
+func TestAnalyseImageMeasuresPalette(t *testing.T) {
+	got := analyseImage(makeJPEG(t, 2000, 1500), 1)
+
+	if len(got.Palette) == 0 {
+		t.Fatal("expected a measured palette")
+	}
+	if got.Palette[0].Role != "ground" {
+		t.Errorf("first swatch role = %q, want ground", got.Palette[0].Role)
+	}
+	if got.Tone == nil || got.Tone.Key == "" {
+		t.Errorf("expected a tone summary, got %+v", got.Tone)
 	}
 }

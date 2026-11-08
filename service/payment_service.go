@@ -46,8 +46,8 @@ func (s *PaymentService) CreateCheckout(ctx context.Context, userID string, req 
 				Quantity: stripe.Int64(1),
 			},
 		},
-		SuccessURL: stripe.String(fmt.Sprintf("%s/dashboard?payment=success", s.cfg.FrontendURL)),
-		CancelURL:  stripe.String(fmt.Sprintf("%s/pricing?payment=cancelled", s.cfg.FrontendURL)),
+		SuccessURL: stripe.String(fmt.Sprintf("%s/dashboard?payment=success", s.cfg.AppURL())),
+		CancelURL:  stripe.String(fmt.Sprintf("%s/pricing?payment=cancelled", s.cfg.AppURL())),
 		Metadata: map[string]string{
 			"user_id":    userID,
 			"wedding_id": req.WeddingID,

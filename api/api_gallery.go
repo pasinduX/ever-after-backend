@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/storyvows/backend/dao"
 	"github.com/storyvows/backend/dto"
+	"github.com/storyvows/backend/service"
 	"github.com/storyvows/backend/utils"
 	"github.com/valyala/fasthttp"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -99,7 +100,7 @@ type AlbumResponse struct {
 	Stats             AlbumStats            `json:"stats"`
 }
 
-func Album(db *mongo.Database) fiber.Handler {
+func Album(db *mongo.Database, uploadSvc *service.UploadService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if c.Query("raw") == "1" {
 			wedding, err := getRequestedWedding(c, db)
@@ -109,6 +110,9 @@ func Album(db *mongo.Database) fiber.Handler {
 			uploads, err := dao.FindApprovedUploadsByWedding(c.UserContext(), db, wedding.ID)
 			if err != nil {
 				return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to load album")
+			}
+			for _, u := range uploads {
+				uploadSvc.RefreshUploadURLs(u)
 			}
 			album := map[string][]*dto.Upload{}
 			for _, u := range uploads {
@@ -125,6 +129,9 @@ func Album(db *mongo.Database) fiber.Handler {
 		uploads, err := dao.FindApprovedUploadsByWedding(c.UserContext(), db, wedding.ID)
 		if err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to load album")
+		}
+		for _, u := range uploads {
+			uploadSvc.RefreshUploadURLs(u)
 		}
 
 		acts, _ := dao.FindStoryActs(c.UserContext(), db, wedding.ID)
@@ -611,7 +618,7 @@ func sectionQuote(category dto.UploadCategory) string {
 	}
 }
 
-func Highlights(db *mongo.Database) fiber.Handler {
+func Highlights(db *mongo.Database, uploadSvc *service.UploadService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		wedding, err := getRequestedWedding(c, db)
 		if err != nil {
@@ -620,6 +627,9 @@ func Highlights(db *mongo.Database) fiber.Handler {
 		highlights, err := dao.FindRandomPhotoHighlights(c.UserContext(), db, wedding.ID, 20)
 		if err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to load highlights")
+		}
+		for _, u := range highlights {
+			uploadSvc.RefreshUploadURLs(u)
 		}
 		return utils.SendJSON(c, fiber.StatusOK, highlights)
 	}
@@ -644,7 +654,7 @@ func getRequestedWedding(c *fiber.Ctx, db *mongo.Database) (*dto.Wedding, error)
 	return dao.FindWeddingBySlug(c.UserContext(), db, id)
 }
 
-func Download(db *mongo.Database) fiber.Handler {
+func Download(db *mongo.Database, uploadSvc *service.UploadService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		weddingID := c.Params("id")
 
@@ -659,6 +669,9 @@ func Download(db *mongo.Database) fiber.Handler {
 		uploads, err := dao.FindApprovedUploadsByWedding(c.UserContext(), db, weddingID)
 		if err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to load uploads")
+		}
+		for _, u := range uploads {
+			uploadSvc.RefreshUploadURLs(u)
 		}
 
 		c.Set("Content-Type", "application/zip")

@@ -58,7 +58,7 @@ func (s *WeddingService) Create(ctx context.Context, ownerID string, req dto.Cre
 	}
 
 	slug := functions.GenerateSlug()
-	qrURL := fmt.Sprintf("%s/w/%s", s.cfg.FrontendURL, slug)
+	qrURL := fmt.Sprintf("%s/w/%s", s.cfg.AppURL(), slug)
 	qrCodeURL, _ := functions.GenerateQRDataURL(qrURL)
 
 	now := time.Now()
@@ -100,6 +100,9 @@ func (s *WeddingService) List(ctx context.Context, ownerID string) ([]*dto.Weddi
 
 func (s *WeddingService) Get(ctx context.Context, weddingID, ownerID string) (*dto.Wedding, error) {
 	w, err := dao.FindWeddingByID(ctx, s.db, weddingID)
+	if errors.Is(err, dao.ErrNoRows) {
+		return nil, apperrors.ErrWeddingNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -111,58 +114,6 @@ func (s *WeddingService) Get(ctx context.Context, weddingID, ownerID string) (*d
 
 func (s *WeddingService) GetBySlug(ctx context.Context, slug string) (*dto.Wedding, error) {
 	return dao.FindWeddingBySlug(ctx, s.db, slug)
-}
-
-func (s *WeddingService) GetPublicByID(ctx context.Context, weddingID string) (*dto.Wedding, error) {
-	w, err := dao.FindWeddingByID(ctx, s.db, weddingID)
-	if err != nil {
-		return nil, err
-	}
-	if w.Privacy != dto.PrivacyPublic {
-		return nil, apperrors.ErrForbidden
-	}
-	w.PasswordHash = nil
-	return w, nil
-}
-
-func (s *WeddingService) GetPublicByIdentifier(ctx context.Context, identifier string) (*dto.Wedding, error) {
-	w, err := dao.FindWeddingByID(ctx, s.db, identifier)
-	if err != nil {
-		if !errors.Is(err, dao.ErrNoRows) {
-			return nil, err
-		}
-		w, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if w.Privacy != dto.PrivacyPublic {
-		return nil, apperrors.ErrForbidden
-	}
-	w.PasswordHash = nil
-	return w, nil
-}
-
-func (s *WeddingService) VerifyGuestAccessByIdentifier(ctx context.Context, identifier, password string) (*dto.Wedding, error) {
-	w, err := dao.FindWeddingByID(ctx, s.db, identifier)
-	if err != nil {
-		if !errors.Is(err, dao.ErrNoRows) {
-			return nil, err
-		}
-		w, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if w.Privacy == dto.PrivacyPrivate {
-		return nil, apperrors.ErrForbidden
-	}
-	if w.Privacy == dto.PrivacyPasswordProtected {
-		if w.PasswordHash == nil || !functions.CheckPassword(*w.PasswordHash, password) {
-			return nil, errors.New("incorrect album password")
-		}
-	}
-	return w, nil
 }
 
 func (s *WeddingService) Update(ctx context.Context, weddingID, ownerID string, req dto.UpdateWeddingRequest) (*dto.Wedding, error) {
@@ -268,22 +219,85 @@ func (s *WeddingService) SetPrivacy(ctx context.Context, weddingID, ownerID stri
 	return dao.UpdateWeddingPrivacy(ctx, s.db, weddingID, req.Privacy, passwordHash)
 }
 
-func (s *WeddingService) VerifyGuestAccess(ctx context.Context, slug, password string) (*dto.Wedding, error) {
-	w, err := dao.FindWeddingBySlug(ctx, s.db, slug)
+func (s *WeddingService) ActivateTier(ctx context.Context, weddingID string, tier dto.Tier, expiresAt *time.Time) error {
+	return dao.ActivateWeddingTier(ctx, s.db, weddingID, tier, expiresAt)
+}
+
+// albumAccessTTL is how long a guest's album password stays remembered.
+const albumAccessTTL = 14 * 24 * time.Hour
+
+// findByIdentifier looks a wedding up by ID, then by its QR slug.
+func (s *WeddingService) findByIdentifier(ctx context.Context, identifier string) (*dto.Wedding, error) {
+	w, err := dao.FindWeddingByID(ctx, s.db, identifier)
+	if errors.Is(err, dao.ErrNoRows) {
+		w, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
+	}
+	if errors.Is(err, dao.ErrNoRows) {
+		return nil, apperrors.ErrWeddingNotFound
+	}
+	return w, err
+}
+
+// OpenAlbum decides whether a visitor may see a wedding's album. Public
+// albums are open; password-protected ones need a guest token from
+// GrantAlbumAccess; private ones are for the couple only. The couple, signed
+// in (userID), can always open their own. On a refusal the wedding is still
+// returned, so the app can show who the album belongs to.
+func (s *WeddingService) OpenAlbum(ctx context.Context, identifier, userID, accessToken string) (*dto.Wedding, error) {
+	w, err := s.findByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
-	if w.Privacy == dto.PrivacyPrivate {
-		return nil, apperrors.ErrForbidden
-	}
-	if w.Privacy == dto.PrivacyPasswordProtected {
-		if w.PasswordHash == nil || !functions.CheckPassword(*w.PasswordHash, password) {
-			return nil, errors.New("incorrect album password")
-		}
-	}
-	return w, nil
+	w.PasswordHash, err = nil, s.albumAccessError(w, userID, accessToken)
+	return w, err
 }
 
-func (s *WeddingService) ActivateTier(ctx context.Context, weddingID string, tier dto.Tier, expiresAt *time.Time) error {
-	return dao.ActivateWeddingTier(ctx, s.db, weddingID, tier, expiresAt)
+func (s *WeddingService) albumAccessError(w *dto.Wedding, userID, accessToken string) error {
+	if userID != "" && userID == w.OwnerID {
+		return nil
+	}
+	switch w.Privacy {
+	case dto.PrivacyPrivate:
+		return apperrors.ErrAlbumPrivate
+	case dto.PrivacyPasswordProtected:
+		if functions.VerifyAlbumAccess(s.cfg.JWTSecret, accessToken, w.ID) {
+			return nil
+		}
+		return apperrors.ErrAlbumPasswordRequired
+	}
+	return nil
+}
+
+// GrantAlbumAccess checks a guest's album password and returns a token that
+// opens the album for albumAccessTTL. Public albums need no password.
+func (s *WeddingService) GrantAlbumAccess(ctx context.Context, identifier, password string) (*dto.Wedding, string, time.Time, error) {
+	w, err := s.findByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	switch w.Privacy {
+	case dto.PrivacyPrivate:
+		return nil, "", time.Time{}, apperrors.ErrAlbumPrivate
+	case dto.PrivacyPasswordProtected:
+		if w.PasswordHash == nil || !functions.CheckPassword(*w.PasswordHash, password) {
+			return nil, "", time.Time{}, apperrors.ErrWrongAlbumPassword
+		}
+	}
+	token, expires, err := functions.SignAlbumAccess(s.cfg.JWTSecret, w.ID, albumAccessTTL)
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	w.PasswordHash = nil
+	return w, token, expires, nil
+}
+
+// FindForGuestUpload looks up the wedding a guest upload link points to, by
+// ID or QR slug, whatever the album's privacy.
+func (s *WeddingService) FindForGuestUpload(ctx context.Context, identifier string) (*dto.Wedding, error) {
+	w, err := s.findByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	w.PasswordHash = nil
+	return w, nil
 }

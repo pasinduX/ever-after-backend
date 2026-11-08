@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -161,6 +163,100 @@ func (s *AuthService) Me(ctx context.Context, userID string) (*dto.User, error) 
 	return user, nil
 }
 
+const (
+	passwordResetTTL         = 15 * time.Minute
+	passwordResetCooldown    = time.Minute
+	passwordResetMaxAttempts = 5
+	minPasswordLength        = 8
+)
+
+// RequestPasswordReset emails a 6-digit reset code. It reports success for
+// unknown emails too, so the endpoint can't be used to discover which
+// addresses have accounts.
+func (s *AuthService) RequestPasswordReset(ctx context.Context, email string) error {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil
+	}
+	user, err := dao.FindUserByEmail(ctx, s.db, email)
+	if err != nil {
+		if errors.Is(err, dao.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("auth RequestPasswordReset find: %w", err)
+	}
+
+	now := time.Now()
+	// Throttle resends so the form can't be used to spam someone's inbox.
+	if exp := user.PasswordResetExpiresAt; exp != nil && now.Before(exp.Add(-passwordResetTTL+passwordResetCooldown)) {
+		return nil
+	}
+
+	code := functions.GenerateOTP()
+	user.PasswordResetCodeHash = functions.HashToken(code)
+	user.PasswordResetExpiresAt = ptrTime(now.Add(passwordResetTTL))
+	user.PasswordResetAttempts = 0
+	if err := dao.UpdateUser(ctx, s.db, user); err != nil {
+		return fmt.Errorf("auth RequestPasswordReset update: %w", err)
+	}
+
+	if err := s.sendEmail(
+		user.Email,
+		"Reset your MoonVeils password",
+		fmt.Sprintf("Your password reset code is %s. It expires in 15 minutes. If you didn't ask to reset your password, you can ignore this email.", code),
+		fmt.Sprintf("<p>Your password reset code is <strong>%s</strong>. It expires in 15 minutes.</p><p>If you didn't ask to reset your password, you can ignore this email.</p>", code),
+	); err != nil {
+		return fmt.Errorf("auth RequestPasswordReset email: %w", err)
+	}
+	return nil
+}
+
+// ResetPassword checks the emailed code, sets the new password and signs the
+// user in. Every existing session is revoked, since a reset usually means the
+// old password can't be trusted.
+func (s *AuthService) ResetPassword(ctx context.Context, req dto.ResetPasswordRequest) (*dto.AuthResponse, error) {
+	if len(req.NewPassword) < minPasswordLength {
+		return nil, apperrors.ErrWeakPassword
+	}
+
+	user, err := dao.ClaimPasswordResetAttempt(ctx, s.db, strings.TrimSpace(req.Email), passwordResetMaxAttempts)
+	if err != nil {
+		if errors.Is(err, dao.ErrNoRows) {
+			return nil, apperrors.ErrInvalidResetCode
+		}
+		return nil, fmt.Errorf("auth ResetPassword claim: %w", err)
+	}
+
+	expired := user.PasswordResetExpiresAt == nil || time.Now().After(*user.PasswordResetExpiresAt)
+	matches := subtle.ConstantTimeCompare(
+		[]byte(functions.HashToken(strings.TrimSpace(req.Code))),
+		[]byte(user.PasswordResetCodeHash),
+	) == 1
+	if expired || !matches {
+		return nil, apperrors.ErrInvalidResetCode
+	}
+
+	hash, err := functions.HashPassword(req.NewPassword)
+	if err != nil {
+		return nil, fmt.Errorf("auth ResetPassword hash: %w", err)
+	}
+	user.PasswordHash = hash
+	user.PasswordResetCodeHash = ""
+	user.PasswordResetExpiresAt = nil
+	user.PasswordResetAttempts = 0
+	// Receiving the code proves the user owns the address.
+	user.IsEmailVerified = true
+	user.EmailVerificationCode = ""
+	user.VerificationExpiresAt = nil
+	if err := dao.UpdateUser(ctx, s.db, user); err != nil {
+		return nil, fmt.Errorf("auth ResetPassword update: %w", err)
+	}
+	if err := dao.DeleteRefreshTokensByUser(ctx, s.db, user.ID); err != nil {
+		return nil, fmt.Errorf("auth ResetPassword revoke sessions: %w", err)
+	}
+	return s.issueTokens(ctx, user)
+}
+
 func (s *AuthService) issueTokens(ctx context.Context, user *dto.User) (*dto.AuthResponse, error) {
 	now := time.Now()
 	accessClaims := jwt.MapClaims{
@@ -193,27 +289,32 @@ func (s *AuthService) issueTokens(ctx context.Context, user *dto.User) (*dto.Aut
 }
 
 func (s *AuthService) sendVerificationEmail(email, code string) error {
-	client := resend.NewClient(s.cfg.ResendAPIKey)
+	return s.sendEmail(
+		email,
+		"Verify your MoonVeils account",
+		fmt.Sprintf("Your verification code is %s. It expires in 15 minutes.", code),
+		fmt.Sprintf("<p>Your verification code is <strong>%s</strong>. It expires in 15 minutes.</p>", code),
+	)
+}
 
-	subject := "Verify your MoonVeils account"
-	plainTextContent := fmt.Sprintf("Your verification code is %s. It expires in 15 minutes.", code)
-	htmlContent := fmt.Sprintf("<p>Your verification code is <strong>%s</strong>. It expires in 15 minutes.</p>", code)
+func (s *AuthService) sendEmail(email, subject, text, html string) error {
+	client := resend.NewClient(s.cfg.ResendAPIKey)
 
 	params := &resend.SendEmailRequest{
 		From:    s.cfg.ResendFromEmail,
 		To:      []string{email},
 		Subject: subject,
-		Html:    htmlContent,
-		Text:    plainTextContent,
+		Html:    html,
+		Text:    text,
 	}
 
 	sent, err := client.Emails.Send(params)
 	if err != nil {
-		slog.Error("resend send failed", "email", email, "error", err)
+		slog.Error("resend send failed", "email", email, "subject", subject, "error", err)
 		return fmt.Errorf("resend error: %w", err)
 	}
 
-	slog.Info("verification email sent", "email", email, "messageID", sent.Id)
+	slog.Info("email sent", "email", email, "subject", subject, "messageID", sent.Id)
 	return nil
 }
 

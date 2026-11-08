@@ -27,7 +27,7 @@ type Secrets struct {
 	StripeHeritagePrice  int64
 	StripeLegacyPrice    int64
 
-	ResendAPIKey  string
+	ResendAPIKey    string
 	ResendFromEmail string
 
 	TwilioAccountSID   string
@@ -49,6 +49,16 @@ type Secrets struct {
 
 	OpenAIAPIKey string
 	OpenAIModel  string
+	// OpenAIModelAnalysis is the vision model for per-photo album analysis.
+	OpenAIModelAnalysis string
+	// OpenAIModelPage is the art director that writes each album page.
+	OpenAIModelPage string
+	// AlbumPageEnabled turns the AI-designed album page on; when off, albums
+	// use the block layout only.
+	AlbumPageEnabled bool
+	// AlbumPageRepairs is how many times a rejected page is sent back to
+	// the model with its problems.
+	AlbumPageRepairs int
 
 	FrontendURL         string
 	FrontendCORSOrigins string
@@ -70,8 +80,8 @@ func Load() (*Secrets, error) {
 		StripeElopementPrice:  parseInt64(getEnv("STRIPE_ELOPEMENT_PRICE", "19900")),
 		StripeHeritagePrice:   parseInt64(getEnv("STRIPE_HERITAGE_PRICE", "44900")),
 		StripeLegacyPrice:     parseInt64(getEnv("STRIPE_LEGACY_PRICE", "79900")),
-		ResendAPIKey:    requireEnv("RESEND_API_KEY"),
-		ResendFromEmail: getEnv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
+		ResendAPIKey:          requireEnv("RESEND_API_KEY"),
+		ResendFromEmail:       getEnv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
 		TwilioAccountSID:      getEnv("TWILIO_ACCOUNT_SID", ""),
 		TwilioAuthToken:       getEnv("TWILIO_AUTH_TOKEN", ""),
 		TwilioWhatsAppFrom:    getEnv("TWILIO_WHATSAPP_FROM", ""),
@@ -88,6 +98,10 @@ func Load() (*Secrets, error) {
 		S3PresignTTL:          parseDuration(getEnv("S3_PRESIGN_TTL", "15m")),
 		OpenAIAPIKey:          getEnv("OPENAI_API_KEY", ""),
 		OpenAIModel:           getEnv("OPENAI_MODEL", "gpt-4.1-mini"),
+		OpenAIModelAnalysis:   getEnv("OPENAI_MODEL_ANALYSIS", getEnv("OPENAI_MODEL", "gpt-4.1-mini")),
+		OpenAIModelPage:       getEnv("OPENAI_MODEL_PAGE", "gpt-5.5"),
+		AlbumPageEnabled:      getEnv("ALBUM_PAGE_ENABLED", "true") != "false",
+		AlbumPageRepairs:      int(parseInt64(getEnv("ALBUM_PAGE_MAX_REPAIRS", "2"))),
 		FrontendURL:           getEnv("FRONTEND_URL", "http://localhost:3000"),
 		FrontendCORSOrigins:   mergeOrigins(getEnv("FRONTEND_ORIGINS", ""), getEnv("FRONTEND_URL", "http://localhost:3000")),
 		MaxUploadSize:         parseInt64(getEnv("MAX_UPLOAD_SIZE", "52428800")),
@@ -150,4 +164,12 @@ func parseInt64(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+// AppURL is the frontend address for links the app hands out (QR codes,
+// payment return pages). FRONTEND_URL may list several origins for CORS
+// ("http://localhost:3000,https://www.moonveils.xyz"); links use the first.
+func (s *Secrets) AppURL() string {
+	first, _, _ := strings.Cut(s.FrontendURL, ",")
+	return strings.TrimRight(strings.TrimSpace(first), "/")
 }
