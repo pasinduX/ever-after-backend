@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,7 +62,16 @@ func (s *UploadService) RefreshURL(rawURL string) string { return s.urls.refresh
 
 func (s *UploadService) buildFileURL(fileKey string) (string, error) { return s.urls.build(fileKey) }
 
-func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
+// GuestUploadInfo is what a guest's browser sends alongside a photo.
+type GuestUploadInfo struct {
+	GuestName string
+	// CapturedAt is the photo's EXIF capture time, read in the browser before
+	// it shrank the photo (re-encoding drops EXIF). Used only when the file
+	// that arrives has no EXIF of its own.
+	CapturedAt *time.Time
+}
+
+func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file multipart.File, header *multipart.FileHeader, info GuestUploadInfo) (*dto.Upload, error) {
 	mimeType := header.Header.Get("Content-Type")
 	fileType, ok := allowedMimeTypes[mimeType]
 	if !ok {
@@ -86,10 +96,10 @@ func (s *UploadService) GuestUpload(ctx context.Context, weddingID string, file 
 		}
 	}
 
-	return s.store(ctx, weddingID, fmt.Sprintf("weddings/%s", weddingID), file, header, mimeType, fileType, guestName)
+	return s.store(ctx, weddingID, fmt.Sprintf("weddings/%s", weddingID), file, header, mimeType, fileType, info)
 }
 
-func (s *UploadService) GuestUploadBySlug(ctx context.Context, slug string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
+func (s *UploadService) GuestUploadBySlug(ctx context.Context, slug string, file multipart.File, header *multipart.FileHeader, info GuestUploadInfo) (*dto.Upload, error) {
 	wedding, err := dao.FindWeddingBySlug(ctx, s.db, slug)
 	if errors.Is(err, dao.ErrNoRows) {
 		return nil, errors.New("wedding not found")
@@ -97,10 +107,10 @@ func (s *UploadService) GuestUploadBySlug(ctx context.Context, slug string, file
 	if err != nil {
 		return nil, err
 	}
-	return s.GuestUpload(ctx, wedding.ID, file, header, guestName)
+	return s.GuestUpload(ctx, wedding.ID, file, header, info)
 }
 
-func (s *UploadService) GuestUploadByIdentifier(ctx context.Context, identifier string, file multipart.File, header *multipart.FileHeader, guestName string) (*dto.Upload, error) {
+func (s *UploadService) GuestUploadByIdentifier(ctx context.Context, identifier string, file multipart.File, header *multipart.FileHeader, info GuestUploadInfo) (*dto.Upload, error) {
 	wedding, err := dao.FindWeddingByID(ctx, s.db, identifier)
 	if errors.Is(err, dao.ErrNoRows) {
 		wedding, err = dao.FindWeddingBySlug(ctx, s.db, identifier)
@@ -113,7 +123,7 @@ func (s *UploadService) GuestUploadByIdentifier(ctx context.Context, identifier 
 	} else if err != nil {
 		return nil, err
 	}
-	return s.GuestUpload(ctx, wedding.ID, file, header, guestName)
+	return s.GuestUpload(ctx, wedding.ID, file, header, info)
 }
 
 func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, file multipart.File, header *multipart.FileHeader) (*dto.Upload, error) {
@@ -127,7 +137,7 @@ func (s *UploadService) UploadToFolder(ctx context.Context, folderID string, fil
 		return nil, apperrors.ErrInvalidFile
 	}
 
-	return s.store(ctx, folderID, strings.Trim(folderID, "/"), file, header, mimeType, fileType, "")
+	return s.store(ctx, folderID, strings.Trim(folderID, "/"), file, header, mimeType, fileType, GuestUploadInfo{})
 }
 
 // store is the single persistence path shared by every upload entry point: read
@@ -141,7 +151,7 @@ func (s *UploadService) store(
 	header *multipart.FileHeader,
 	mimeType string,
 	fileType dto.FileType,
-	guestName string,
+	info GuestUploadInfo,
 ) (*dto.Upload, error) {
 	fileBytes, err := io.ReadAll(file)
 	if err != nil {
@@ -150,11 +160,15 @@ func (s *UploadService) store(
 
 	exifData := extractEXIF(fileBytes)
 	contentHash := computeContentHash(fileBytes)
+	capturedAt := exifData.CapturedAt
+	if capturedAt == nil {
+		capturedAt = info.CapturedAt
+	}
 
 	// One decode covers dimensions, perceptual hash and both derivatives.
 	var media mediaAnalysis
 	if fileType == dto.FileTypePhoto {
-		media = analyseImage(fileBytes)
+		media = analyseImage(fileBytes, exifData.Orientation)
 	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
@@ -175,22 +189,19 @@ func (s *UploadService) store(
 	// upload the guest is waiting on.
 	thumbnailURL := fileURL
 	mediumURL := fileURL
-	if key, ok := s.putDerivative(ctx, keyPrefix, baseName, "thumb", media.Thumbnail); ok {
+	if key, ok := s.putDerivative(ctx, fileKey, "thumb", media.Thumbnail); ok {
 		if url, err := s.buildFileURL(key); err == nil {
 			thumbnailURL = url
 		}
 	}
-	if key, ok := s.putDerivative(ctx, keyPrefix, baseName, "medium", media.Medium); ok {
+	if key, ok := s.putDerivative(ctx, fileKey, "medium", media.Medium); ok {
 		if url, err := s.buildFileURL(key); err == nil {
 			mediumURL = url
 		}
 	}
 
 	now := time.Now()
-	timeline := dto.UploadTimeline{UploadedAt: now}
-	if exifData.CapturedAt != nil {
-		timeline.CapturedAt = exifData.CapturedAt
-	}
+	timeline := dto.UploadTimeline{UploadedAt: now, CapturedAt: capturedAt}
 
 	thumbStage := dto.AnalysisStatusSucceeded
 	if !media.Decoded {
@@ -224,6 +235,11 @@ func (s *UploadService) store(
 			Height:      intPtrOrNil(dims.Height),
 			AspectRatio: floatPtrOrNil(dims.AspectRatio),
 			Orientation: stringPtrOrNil(dims.Orientation),
+			Palette:     media.Palette,
+			Tone:        media.Tone,
+			// Stamped even when the format couldn't be decoded, so re-analysis
+			// doesn't keep downloading a HEIC it still can't read.
+			PipelineVersion: imagePipelineVersion,
 		},
 		Timeline:    timeline,
 		EXIF:        exifData,
@@ -243,12 +259,11 @@ func (s *UploadService) store(
 			IsApproved: true,
 		},
 	}
-	if guestName != "" {
+	if info.GuestName != "" {
+		guestName := info.GuestName
 		upload.GuestName = &guestName
 	}
-	if exifData.CapturedAt != nil {
-		upload.TakenAt = exifData.CapturedAt
-	}
+	upload.TakenAt = capturedAt
 
 	if err := dao.CreateUpload(ctx, s.db, upload); err != nil {
 		return nil, err
@@ -260,8 +275,16 @@ func (s *UploadService) store(
 }
 
 func (s *UploadService) putObject(ctx context.Context, key string, body []byte, contentType string) error {
-	_, err := s.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.cfg.S3Bucket),
+	return putS3Object(ctx, s.s3, s.cfg.S3Bucket, key, body, contentType)
+}
+
+func (s *UploadService) putDerivative(ctx context.Context, fileKey, variant string, body []byte) (string, bool) {
+	return storeDerivative(ctx, s.s3, s.cfg.S3Bucket, fileKey, variant, body)
+}
+
+func putS3Object(ctx context.Context, client *s3.Client, bucket, key string, body []byte, contentType string) error {
+	_, err := client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(body),
 		ContentType: aws.String(contentType),
@@ -269,15 +292,22 @@ func (s *UploadService) putObject(ctx context.Context, key string, body []byte, 
 	return err
 }
 
-// putDerivative stores a downscaled variant. It reports false when there was
+// derivativeKey names a downscaled variant after its original, e.g.
+// weddings/w1/abc.heic -> weddings/w1/abc_thumb.jpg. Rebuilding a derivative
+// therefore overwrites the old one instead of orphaning it.
+func derivativeKey(fileKey, variant string) string {
+	return fmt.Sprintf("%s_%s.jpg", strings.TrimSuffix(fileKey, filepath.Ext(fileKey)), variant)
+}
+
+// storeDerivative stores a downscaled variant. It reports false when there was
 // nothing to store (small source, or an image we couldn't decode) or the put
 // failed, in which case the caller keeps pointing at the original.
-func (s *UploadService) putDerivative(ctx context.Context, keyPrefix, baseName, variant string, body []byte) (string, bool) {
+func storeDerivative(ctx context.Context, client *s3.Client, bucket, fileKey, variant string, body []byte) (string, bool) {
 	if len(body) == 0 {
 		return "", false
 	}
-	key := fmt.Sprintf("%s/%s_%s.jpg", keyPrefix, baseName, variant)
-	if err := s.putObject(ctx, key, body, "image/jpeg"); err != nil {
+	key := derivativeKey(fileKey, variant)
+	if err := putS3Object(ctx, client, bucket, key, body, "image/jpeg"); err != nil {
 		slog.Warn("failed to store image derivative, falling back to original",
 			"error", err.Error(), "variant", variant, "key", key)
 		return "", false
@@ -322,6 +352,11 @@ func extractEXIF(data []byte) dto.UploadEXIF {
 	}
 	if t, err := x.DateTime(); err == nil {
 		result.CapturedAt = &t
+	}
+	if tag, err := x.Get(exiflib.Orientation); err == nil {
+		if v, err := tag.Int(0); err == nil {
+			result.Orientation = v
+		}
 	}
 	if lat, lng, err := x.LatLong(); err == nil {
 		result.Lat = &lat
@@ -415,4 +450,124 @@ func (s *UploadService) Delete(ctx context.Context, uploadID string) error {
 		Key:    aws.String(upload.FileKey),
 	})
 	return dao.DeleteUpload(ctx, s.db, uploadID)
+}
+
+// AlbumPhotos lists a wedding's approved photos in capture order, with fresh
+// links to the display (medium) and thumbnail renditions. The album page
+// never receives the multi-megabyte originals.
+func (s *UploadService) AlbumPhotos(ctx context.Context, weddingID string) ([]dto.AlbumPhoto, error) {
+	uploads, err := dao.FindApprovedUploadsByWedding(ctx, s.db, weddingID)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(uploads, func(i, j int) bool {
+		return photoTime(uploads[i]).Before(photoTime(uploads[j]))
+	})
+
+	photos := make([]dto.AlbumPhoto, 0, len(uploads))
+	for _, u := range uploads {
+		if u.FileType != dto.FileTypePhoto {
+			continue
+		}
+		original := u.Storage.FileKey
+		if original == "" {
+			original = u.FileKey
+		}
+		src := s.urls.refresh(firstNonEmpty(u.Storage.MediumURL, u.Storage.OriginalURL, u.FileURL))
+		if src == "" {
+			src = s.urls.fresh(original)
+		}
+		if src == "" {
+			continue
+		}
+		photo := dto.AlbumPhoto{
+			ID:     u.ID,
+			Src:    src,
+			Thumb:  s.urls.refresh(u.Storage.ThumbnailURL),
+			Width:  1,
+			Height: 1,
+		}
+		if u.Metadata.Width != nil && u.Metadata.Height != nil {
+			photo.Width, photo.Height = *u.Metadata.Width, *u.Metadata.Height
+		}
+		if album := u.Analysis.Album; album != nil {
+			photo.Caption = album.Caption
+			photo.Alt = album.AltText
+		}
+		photos = append(photos, photo)
+	}
+	return photos, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// uploadInWedding loads an upload and confirms it belongs to the wedding, so
+// a couple can only moderate their own guests' photos.
+func (s *UploadService) uploadInWedding(ctx context.Context, weddingID, uploadID string) (*dto.Upload, error) {
+	upload, err := dao.FindUploadByID(ctx, s.db, uploadID)
+	if errors.Is(err, dao.ErrNoRows) || (err == nil && upload.WeddingID != weddingID) {
+		return nil, apperrors.ErrUploadNotFound
+	}
+	return upload, err
+}
+
+func (s *UploadService) SetApprovalInWedding(ctx context.Context, weddingID, uploadID string, approved bool) error {
+	if _, err := s.uploadInWedding(ctx, weddingID, uploadID); err != nil {
+		return err
+	}
+	return s.SetApproval(ctx, uploadID, approved)
+}
+
+func (s *UploadService) DeleteInWedding(ctx context.Context, weddingID, uploadID string) error {
+	if _, err := s.uploadInWedding(ctx, weddingID, uploadID); err != nil {
+		return err
+	}
+	return s.Delete(ctx, uploadID)
+}
+
+// RefreshUploadURLs re-signs every link on an upload in place. Links are
+// stored presigned at upload time and expire within minutes, so anything
+// that serves or fetches stored uploads must call this first.
+func (s *UploadService) RefreshUploadURLs(u *dto.Upload) {
+	u.FileURL = s.urls.refresh(u.FileURL)
+	u.Storage.OriginalURL = s.urls.refresh(u.Storage.OriginalURL)
+	u.Storage.MediumURL = s.urls.refresh(u.Storage.MediumURL)
+	u.Storage.ThumbnailURL = s.urls.refresh(u.Storage.ThumbnailURL)
+}
+
+// exifTimeLayout is how EXIF writes timestamps ("2026:10:31 18:22:05").
+const exifTimeLayout = "2006:01:02 15:04:05"
+
+// ParseClientCaptureTime reads the EXIF capture time a guest's browser sent:
+// the raw EXIF timestamp, and its offset ("+05:30") when the photo recorded
+// one. Without an offset it is read in the server's zone, exactly as EXIF in
+// an uploaded file is. Implausible times are ignored rather than trusted.
+func ParseClientCaptureTime(raw, offset string, now time.Time) *time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var t time.Time
+	var err error
+	if offset = strings.TrimSpace(offset); offset != "" {
+		t, err = time.Parse(exifTimeLayout+"-07:00", raw+offset)
+	} else {
+		t, err = time.ParseInLocation(exifTimeLayout, raw, time.Local)
+	}
+	if err != nil || t.Year() < 1990 || t.After(now.Add(24*time.Hour)) {
+		return nil
+	}
+	return &t
+}
+
+// CleanGuestName trims a guest's typed name to something safe to store.
+func CleanGuestName(name string) string {
+	return truncateRunes(strings.Join(strings.Fields(name), " "), 60)
 }

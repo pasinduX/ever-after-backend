@@ -10,8 +10,13 @@ type User struct {
 	IsEmailVerified       bool       `json:"is_email_verified" bson:"is_email_verified"`
 	EmailVerificationCode string     `json:"-" bson:"email_verification_code,omitempty"`
 	VerificationExpiresAt *time.Time `json:"-" bson:"verification_expires_at,omitempty"`
-	CreatedAt             time.Time  `json:"created_at" bson:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at" bson:"updated_at"`
+	// The reset code is stored hashed: unlike the signup code, it can take over
+	// an existing account, so a DB read must not be enough to use it.
+	PasswordResetCodeHash  string     `json:"-" bson:"password_reset_code_hash,omitempty"`
+	PasswordResetExpiresAt *time.Time `json:"-" bson:"password_reset_expires_at,omitempty"`
+	PasswordResetAttempts  int        `json:"-" bson:"password_reset_attempts,omitempty"`
+	CreatedAt              time.Time  `json:"created_at" bson:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at" bson:"updated_at"`
 }
 
 type RefreshToken struct {
@@ -51,6 +56,16 @@ type SendWhatsAppTemplateRequest struct {
 type VerifyEmailRequest struct {
 	Email string `json:"email"`
 	Code  string `json:"code"`
+}
+
+type ForgotPasswordRequest struct {
+	Email string `json:"email"`
+}
+
+type ResetPasswordRequest struct {
+	Email       string `json:"email"`
+	Code        string `json:"code"`
+	NewPassword string `json:"new_password"`
 }
 
 type AuthResponse struct {

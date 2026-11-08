@@ -10,12 +10,19 @@ var (
 	ErrEmailNotVerified        = errors.New("email not verified")
 	ErrInvalidVerificationCode = errors.New("invalid or expired verification code")
 	ErrAlreadyVerified         = errors.New("email already verified")
+	ErrInvalidResetCode        = errors.New("invalid or expired reset code")
+	ErrWeakPassword            = errors.New("password must be at least 8 characters")
 )
 
 // Wedding domain errors
 var (
 	ErrWeddingNotFound = errors.New("wedding not found")
-	ErrForbidden       = errors.New("access denied")
+	// ErrAlbumPrivate: only the couple may open this album.
+	ErrAlbumPrivate = errors.New("this album is private")
+	// ErrAlbumPasswordRequired: a guest needs the album password first.
+	ErrAlbumPasswordRequired = errors.New("this album needs a password")
+	ErrWrongAlbumPassword    = errors.New("incorrect album password")
+	ErrForbidden             = errors.New("access denied")
 )
 
 // Upload domain errors

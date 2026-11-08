@@ -16,6 +16,14 @@ func DeleteRefreshTokenByID(ctx context.Context, db *mongo.Database, id string) 
 	return nil
 }
 
+func DeleteRefreshTokensByUser(ctx context.Context, db *mongo.Database, userID string) error {
+	_, err := db.Collection("refresh_tokens").DeleteMany(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		return fmt.Errorf("dao DeleteRefreshTokensByUser: %w", err)
+	}
+	return nil
+}
+
 func DeleteRefreshTokenByHash(ctx context.Context, db *mongo.Database, tokenHash string) error {
 	_, err := db.Collection("refresh_tokens").DeleteOne(ctx, bson.M{"token_hash": tokenHash})
 	if err != nil {

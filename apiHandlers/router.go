@@ -26,7 +26,7 @@ func NewRouter(
 	uploadSvc *service.UploadService,
 	paymentSvc *service.PaymentService,
 	albumSvc *service.AlbumService,
-	enrichSvc *service.EnrichmentService,
+	analysisSvc *service.AnalysisService,
 	payloadSvc *service.PayloadService,
 	hub *realtime.Hub,
 ) *fiber.App {
@@ -42,7 +42,7 @@ func NewRouter(
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.FrontendCORSOrigins,
 		AllowMethods:     "GET,POST,PATCH,DELETE,OPTIONS",
-		AllowHeaders:     "Accept,Authorization,Content-Type",
+		AllowHeaders:     "Accept,Authorization,Content-Type," + functions.AlbumAccessHeader,
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -56,7 +56,11 @@ func NewRouter(
 	})
 
 	getUID := functions.GetUserID
-	app.Get("/api/weddings/:id", api.PublicWedding(weddingSvc))
+	// Guest album routes apply the wedding's privacy; the signed-in couple
+	// always passes. This public lookup is registered before the owner route
+	// below and so answers both guests and owners.
+	albumAccess := api.RequireAlbumAccess(weddingSvc, cfg.JWTSecret)
+	app.Get("/api/weddings/:id", albumAccess, api.GuestWedding())
 
 	requireAuth := functions.RequireAuth(cfg.JWTSecret)
 	app.Post("/api/whatsapp/send", requireAuth, api.SendWhatsAppMessage(whatsappSvc))
@@ -67,6 +71,8 @@ func NewRouter(
 	auth.Post("/signup", api.SignUp(authSvc))
 	auth.Post("/verify", api.VerifyEmail(authSvc))
 	auth.Post("/signin", api.SignIn(authSvc))
+	auth.Post("/forgot-password", api.ForgotPassword(authSvc))
+	auth.Post("/reset-password", api.ResetPassword(authSvc))
 	auth.Post("/refresh", api.Refresh(authSvc))
 	auth.Post("/signout", requireAuth, api.SignOut(authSvc))
 	auth.Get("/me", requireAuth, api.Me(authSvc, getUID))
@@ -91,32 +97,42 @@ func NewRouter(
 	weddings.Get("/:id/guests/:guestId", api.GetGuest(guestSvc, getUID))
 	weddings.Patch("/:id/guests/:guestId", api.UpdateGuest(guestSvc, getUID))
 	weddings.Delete("/:id/guests/:guestId", api.DeleteGuest(guestSvc, getUID))
-	weddings.Get("/:id/uploads", api.ListUploads(uploadSvc))
-	weddings.Patch("/:id/uploads/:uploadId/approve", api.ApproveUpload(uploadSvc))
-	weddings.Delete("/:id/uploads/:uploadId", api.DeleteUpload(uploadSvc))
-	weddings.Get("/:id/album", api.Album(db))
-	weddings.Get("/:id/album/highlights", api.Highlights(db))
-	weddings.Post("/:id/album/generate", api.GenerateAlbum(albumSvc))
-	weddings.Get("/:id/album/status", api.GetAlbumStatus(albumSvc))
-	weddings.Get("/:id/album/acts", api.GetActs(albumSvc))
-	weddings.Patch("/:id/album/acts", api.UpdateActs(albumSvc))
-	weddings.Patch("/:id/album/style", api.SetAlbumStyle(albumSvc))
+	// These handlers don't check ownership themselves.
+	owner := api.RequireWeddingOwner(weddingSvc, getUID)
+	weddings.Get("/:id/uploads", owner, api.ListUploads(uploadSvc))
+	weddings.Patch("/:id/uploads/:uploadId/approve", owner, api.ApproveUpload(uploadSvc))
+	weddings.Delete("/:id/uploads/:uploadId", owner, api.DeleteUpload(uploadSvc))
+	weddings.Get("/:id/album", owner, api.Album(db, uploadSvc))
+	weddings.Get("/:id/album/highlights", owner, api.Highlights(db, uploadSvc))
+	weddings.Post("/:id/album/generate", owner, api.GenerateAlbum(albumSvc))
+	weddings.Get("/:id/album/status", owner, api.GetAlbumStatus(albumSvc))
+	weddings.Get("/:id/album/acts", owner, api.GetActs(albumSvc))
+	weddings.Patch("/:id/album/acts", owner, api.UpdateActs(albumSvc))
+	weddings.Patch("/:id/album/style", owner, api.SetAlbumStyle(albumSvc))
 
-	enrichH := api.NewEnrichmentHandler(enrichSvc, payloadSvc, uploadSvc)
-	weddings.Post("/:id/enrich", enrichH.StartEnrichment)
-	weddings.Get("/:id/enrich/status", enrichH.GetEnrichmentStatus)
-	weddings.Get("/:id/album/payload", enrichH.GetAlbumPayload)
+	payloadH := api.NewAlbumPayloadHandler(payloadSvc, uploadSvc)
+	weddings.Get("/:id/album/payload", owner, payloadH.GetAlbumPayload)
+	weddings.Get("/:id/album/photos", api.AlbumPhotos(weddingSvc, uploadSvc, getUID))
+	weddings.Get("/:id/album/page", api.GetAlbumPage(albumSvc, weddingSvc, getUID))
+	weddings.Post("/:id/album/page/regenerate", api.RegenerateAlbumPage(albumSvc, weddingSvc, getUID))
+	weddings.Get("/:id/album/page/versions", owner, api.ListAlbumPageVersions(albumSvc))
+	weddings.Post("/:id/album/page/versions/:version/activate", owner, api.ActivateAlbumPageVersion(albumSvc))
+	weddings.Post("/:id/analysis/rerun", api.RerunAnalysis(analysisSvc, weddingSvc, getUID))
+	weddings.Get("/:id/analysis/status", api.AnalysisStatus(analysisSvc, weddingSvc, getUID))
 
 	app.Post("/api/uploads", api.UploadToFolder(uploadSvc, hub, cfg.MaxUploadSize))
-	weddings.Get("/:id/album/download", api.Download(db))
-	weddings.Get("/:id/wall", hub.ServeSSE)
+	weddings.Get("/:id/album/download", owner, api.Download(db, uploadSvc))
+	weddings.Get("/:id/wall", owner, hub.ServeSSE)
 
 	guest := app.Group("/api/w/:id")
-	guest.Get("/", api.GuestViewWedding(weddingSvc))
-	guest.Post("/access", api.GuestAccessWedding(weddingSvc))
+	guest.Get("/", albumAccess, api.GuestWedding())
+	guest.Post("/access", api.GrantAlbumAccess(weddingSvc))
+	guest.Get("/upload-info", api.GuestUploadInfo(weddingSvc))
 	guest.Post("/uploads", api.GuestUpload(uploadSvc, hub, cfg.MaxUploadSize))
-	guest.Get("/album", api.Album(db))
-	guest.Get("/album/highlights", api.Highlights(db))
+	guest.Get("/album", albumAccess, api.Album(db, uploadSvc))
+	guest.Get("/album/highlights", albumAccess, api.Highlights(db, uploadSvc))
+	guest.Get("/album/page", albumAccess, api.GuestAlbumPage(albumSvc))
+	guest.Get("/album/photos", albumAccess, api.GuestAlbumPhotos(uploadSvc))
 
 	app.Post("/api/checkout", requireAuth, api.Checkout(paymentSvc, getUID))
 	app.Post("/api/webhooks/stripe", api.StripeWebhook(paymentSvc, cfg))

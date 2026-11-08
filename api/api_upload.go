@@ -2,6 +2,7 @@ package api
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/storyvows/backend/dto"
@@ -16,7 +17,11 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 		if identifier == "" {
 			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "identifier required")
 		}
-		guestName := c.FormValue("guest_name")
+		info := service.GuestUploadInfo{
+			// uploader_name is what older frontends sent.
+			GuestName:  service.CleanGuestName(firstFormValue(c, "guest_name", "uploader_name")),
+			CapturedAt: service.ParseClientCaptureTime(c.FormValue("captured_at"), c.FormValue("captured_offset"), time.Now()),
+		}
 
 		fileHeader, err := c.FormFile("file")
 		if err != nil {
@@ -29,7 +34,7 @@ func GuestUpload(svc *service.UploadService, hub *realtime.Hub, maxSize int64) f
 		}
 		defer file.Close()
 
-		upload, err := svc.GuestUploadByIdentifier(c.UserContext(), identifier, file, fileHeader, guestName)
+		upload, err := svc.GuestUploadByIdentifier(c.UserContext(), identifier, file, fileHeader, info)
 		if err != nil {
 			slog.Error("guest upload failed", "error", err.Error(), "wedding_id", identifier)
 			return utils.SendServiceError(c, err)
@@ -93,8 +98,8 @@ func ApproveUpload(svc *service.UploadService) fiber.Handler {
 		if err := c.BodyParser(&req); err != nil {
 			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 		}
-		if err := svc.SetApproval(c.UserContext(), c.Params("uploadId"), req.Approved); err != nil {
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "failed to update approval")
+		if err := svc.SetApprovalInWedding(c.UserContext(), c.Params("id"), c.Params("uploadId"), req.Approved); err != nil {
+			return utils.SendServiceError(c, err)
 		}
 		return utils.SendSuccessResponse(c, "updated", nil)
 	}
@@ -102,9 +107,18 @@ func ApproveUpload(svc *service.UploadService) fiber.Handler {
 
 func DeleteUpload(svc *service.UploadService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if err := svc.Delete(c.UserContext(), c.Params("uploadId")); err != nil {
-			return utils.SendErrorResponse(c, fiber.StatusInternalServerError, "delete failed")
+		if err := svc.DeleteInWedding(c.UserContext(), c.Params("id"), c.Params("uploadId")); err != nil {
+			return utils.SendServiceError(c, err)
 		}
 		return utils.SendSuccessResponse(c, "deleted", nil)
 	}
+}
+
+func firstFormValue(c *fiber.Ctx, keys ...string) string {
+	for _, key := range keys {
+		if v := c.FormValue(key); v != "" {
+			return v
+		}
+	}
+	return ""
 }

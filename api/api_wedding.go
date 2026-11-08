@@ -57,16 +57,6 @@ func GetWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) string) 
 	}
 }
 
-func PublicWedding(svc *service.WeddingService) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		result, err := svc.GetPublicByID(c.UserContext(), c.Params("id"))
-		if err != nil {
-			return weddingServiceError(c, err)
-		}
-		return utils.SendJSON(c, fiber.StatusOK, result)
-	}
-}
-
 func UpdateWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req dto.UpdateWeddingRequest
@@ -100,31 +90,5 @@ func SetPrivacyWedding(svc *service.WeddingService, getUserID func(*fiber.Ctx) s
 			return weddingServiceError(c, err)
 		}
 		return utils.SendSuccessResponse(c, "privacy updated", nil)
-	}
-}
-
-func GuestViewWedding(svc *service.WeddingService) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		result, err := svc.GetPublicByIdentifier(c.UserContext(), c.Params("id"))
-		if err != nil {
-			return weddingServiceError(c, err)
-		}
-		result.PasswordHash = nil
-		return utils.SendJSON(c, fiber.StatusOK, result)
-	}
-}
-
-func GuestAccessWedding(svc *service.WeddingService) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		var req dto.GuestAccessRequest
-		if err := c.BodyParser(&req); err != nil {
-			return utils.SendErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
-		}
-		result, err := svc.VerifyGuestAccessByIdentifier(c.UserContext(), c.Params("id"), req.Password)
-		if err != nil {
-			return utils.SendErrorResponse(c, fiber.StatusUnauthorized, err.Error())
-		}
-		result.PasswordHash = nil
-		return utils.SendJSON(c, fiber.StatusOK, result)
 	}
 }

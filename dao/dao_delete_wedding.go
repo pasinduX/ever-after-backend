@@ -15,6 +15,7 @@ var weddingScopedCollections = []string{
 	"uploads",
 	"album_configs",
 	"album_payloads",
+	"album_pages",
 	"story_acts",
 	"invite_configs",
 	"thankyou_configs",

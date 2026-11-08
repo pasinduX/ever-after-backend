@@ -23,8 +23,16 @@ type AlbumService struct {
 	db         *mongo.Database
 	cfg        *integrations.Secrets
 	payload    *PayloadService
-	jobs       chan string
+	jobs       chan albumJob
 	httpClient *http.Client
+	pageClient *http.Client
+}
+
+// albumJob is one queued piece of album work. pageOnly re-runs just the art
+// director on the wedding's current acts, without regrouping the photos.
+type albumJob struct {
+	weddingID string
+	pageOnly  bool
 }
 
 // maxPayloadImages is the cap of photos sent to the AI for layout generation.
@@ -37,26 +45,63 @@ func NewAlbumService(db *mongo.Database, cfg *integrations.Secrets, payload *Pay
 		db:         db,
 		cfg:        cfg,
 		payload:    payload,
-		jobs:       make(chan string, 200),
+		jobs:       make(chan albumJob, 200),
 		httpClient: &http.Client{Timeout: 90 * time.Second},
+		pageClient: &http.Client{Timeout: pageRequestTimeout + 30*time.Second},
 	}
 }
 
+// albumWorkers lets a slow page design (minutes, on a reasoning model) run
+// without holding up every other wedding's album.
+const albumWorkers = 3
+
 func (s *AlbumService) Start() {
-	go s.worker()
+	// Pages left "generating" by a restart will never finish; mark them so
+	// the app stops waiting and offers to regenerate.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := dao.InterruptStaleAlbumPages(ctx, s.db, time.Now()); err != nil {
+		slog.Warn("could not mark interrupted album pages", "error", err.Error())
+	}
+	cancel()
+	for i := 0; i < albumWorkers; i++ {
+		go s.worker()
+	}
 }
 
 func (s *AlbumService) Enqueue(weddingID string) {
+	s.enqueue(albumJob{weddingID: weddingID})
+}
+
+// RegeneratePage queues a new design of the album page from the wedding's
+// current acts, for after the couple has reviewed them.
+func (s *AlbumService) RegeneratePage(weddingID string) bool {
+	return s.enqueue(albumJob{weddingID: weddingID, pageOnly: true})
+}
+
+func (s *AlbumService) enqueue(job albumJob) bool {
 	select {
-	case s.jobs <- weddingID:
+	case s.jobs <- job:
+		return true
 	default:
-		slog.Warn("album generation queue full", "wedding_id", weddingID)
+		slog.Warn("album generation queue full", "wedding_id", job.weddingID, "page_only", job.pageOnly)
+		return false
 	}
 }
 
 func (s *AlbumService) worker() {
-	for weddingID := range s.jobs {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	for job := range s.jobs {
+		weddingID := job.weddingID
+		if job.pageOnly {
+			ctx, cancel := context.WithTimeout(context.Background(), pageStageBudget+time.Minute)
+			if _, err := s.GenerateAlbumPage(ctx, weddingID); err != nil {
+				slog.Error("album page generation failed", "wedding_id", weddingID, "error", err)
+			}
+			cancel()
+			continue
+		}
+		// Acts and the block payload take a few minutes; the page design
+		// that follows has its own budget.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute+pageStageBudget)
 		if err := s.generateActs(ctx, weddingID); err != nil {
 			slog.Error("album generation failed", "wedding_id", weddingID, "error", err)
 			errMsg := err.Error()
@@ -223,6 +268,13 @@ func (s *AlbumService) generateActs(ctx context.Context, weddingID string) error
 	}
 	if payload != nil {
 		_ = dao.UpsertAlbumPayload(ctx, s.db, payload)
+	}
+
+	// Finally the art director designs the album page. Its outcome, ready or
+	// fallback, is stored as its own version; the block album above is what
+	// clients show until (or unless) a page is ready.
+	if _, err := s.GenerateAlbumPage(ctx, weddingID); err != nil {
+		slog.Error("album page generation failed", "wedding_id", weddingID, "error", err)
 	}
 	return nil
 }
@@ -504,19 +556,39 @@ func selectHeroPhoto(photos []*dto.Upload) string {
 	best := photos[0]
 	bestScore := -1.0
 	for _, u := range photos {
-		score := 0.0
-		if u.Analysis.StudioProbability != nil {
-			score += *u.Analysis.StudioProbability * 50.0
-		}
-		if u.Analysis.FeaturedScore != nil {
-			score += float64(*u.Analysis.FeaturedScore) * 0.5
-		}
-		if score > bestScore {
+		if score := heroRank(u); score > bestScore {
 			bestScore = score
 			best = u
 		}
 	}
 	return best.ID
+}
+
+// heroRank scores how well a photo can carry a full page. Album analysis
+// (v2+) supplies a direct hero score; older analyses fall back to the
+// featured and studio scores.
+func heroRank(u *dto.Upload) float64 {
+	if album := u.Analysis.Album; album != nil {
+		score := album.HeroScore*60 + album.EmotionScore*15 + album.AestheticScore*15
+		if album.CouplePresent {
+			score += 10
+		}
+		switch album.Fit {
+		case dto.AlbumFitSkip:
+			score -= 100
+		case dto.AlbumFitMaybe:
+			score -= 20
+		}
+		return score
+	}
+	score := 0.0
+	if u.Analysis.StudioProbability != nil {
+		score += *u.Analysis.StudioProbability * 50.0
+	}
+	if u.Analysis.FeaturedScore != nil {
+		score += float64(*u.Analysis.FeaturedScore) * 0.5
+	}
+	return score
 }
 
 // --- Category-based fallback ---
@@ -646,11 +718,17 @@ type compactImageInfo struct {
 	Faces       int      `json:"faces"`
 	Quality     float64  `json:"quality"`
 	// ShootType is derived from timestamp vs wedding date: pre_shoot | wedding_day | guest
-	ShootType   string   `json:"shoot_type"`
+	ShootType string `json:"shoot_type"`
 	// EventType comes from AI analysis at upload time: pre_shoot | getting_ready | ceremony | reception | other
-	EventType   string   `json:"event_type,omitempty"`
+	EventType string `json:"event_type,omitempty"`
 	// ClothColors lists dominant outfit colours AI saw at upload time (e.g. ["white","gold"])
 	ClothColors []string `json:"cloth_colors,omitempty"`
+	// Album analysis (v2+): the specific moment and how strong the frame is.
+	Moment     string  `json:"moment,omitempty"`
+	Fit        string  `json:"fit,omitempty"`
+	HeroScore  float64 `json:"hero_score,omitempty"`
+	CoverScore float64 `json:"cover_score,omitempty"`
+	Couple     bool    `json:"couple,omitempty"`
 }
 
 // preProcessUploads filters approved + usable photos, deduplicates by phash/content_hash,
@@ -660,6 +738,9 @@ func preProcessUploads(uploads []*dto.Upload) []*dto.Upload {
 	out := make([]*dto.Upload, 0, len(uploads))
 	for _, u := range uploads {
 		if !u.IsApproved {
+			continue
+		}
+		if u.Analysis.Album != nil && u.Analysis.Album.Fit == dto.AlbumFitSkip {
 			continue
 		}
 		if v, ok := u.AIInsights["is_usable"]; ok {
@@ -766,6 +847,13 @@ func (s *AlbumService) generatePayloadViaAI(
 		if u.Orientation != nil {
 			info.Orientation = *u.Orientation
 		}
+		if album := u.Analysis.Album; album != nil {
+			info.Moment = album.Moment
+			info.Fit = album.Fit
+			info.HeroScore = album.HeroScore
+			info.CoverScore = album.CoverScore
+			info.Couple = album.CouplePresent
+		}
 		if u.Analysis.DetectedFaces != nil {
 			info.Faces = *u.Analysis.DetectedFaces
 		} else if u.DetectedFaces != nil {
@@ -811,7 +899,8 @@ func (s *AlbumService) generatePayloadViaAI(
 	}
 
 	systemPrompt := `You are a cinematic wedding film editor. Build a narrative arc across chapters.
-Reference images by id only. Never invent ids. Prefer portrait + quality >= 0.8 + faces >= 2 for cover/fullscreen/finale.
+Reference images by id only. Never invent ids. For the cover pick the highest cover_score with couple true; for fullscreen and finale blocks pick high hero_score frames. Put fit "maybe" frames in grids, never alone.
+Use each image's moment to place it in the right chapter.
 Use grids/filmstrips for the long tail. Keep 4–7 blocks per chapter.
 Return ONLY valid JSON — no markdown, no code fences, no commentary.`
 

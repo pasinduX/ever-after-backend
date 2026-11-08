@@ -25,6 +25,14 @@ func SendServiceError(c *fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, apperrors.ErrWeddingNotFound):
 		return SendErrorResponse(c, fiber.StatusNotFound, "wedding not found")
+	// Guests get 403s with machine-readable codes (never 401, which the
+	// frontend treats as an expired login and signs out on).
+	case errors.Is(err, apperrors.ErrAlbumPrivate):
+		return c.Status(fiber.StatusForbidden).JSON(dto.ErrorResponse{Error: "album_private", Message: err.Error()})
+	case errors.Is(err, apperrors.ErrAlbumPasswordRequired):
+		return c.Status(fiber.StatusForbidden).JSON(dto.ErrorResponse{Error: "password_required", Message: err.Error()})
+	case errors.Is(err, apperrors.ErrWrongAlbumPassword):
+		return c.Status(fiber.StatusForbidden).JSON(dto.ErrorResponse{Error: "wrong_password", Message: err.Error()})
 	case errors.Is(err, apperrors.ErrForbidden):
 		return SendErrorResponse(c, fiber.StatusForbidden, "access denied")
 	case errors.Is(err, apperrors.ErrInvalidFile):
@@ -41,6 +49,10 @@ func SendServiceError(c *fiber.Ctx, err error) error {
 		return SendErrorResponse(c, fiber.StatusUnauthorized, "invalid or expired token")
 	case errors.Is(err, apperrors.ErrInvalidVerificationCode):
 		return SendErrorResponse(c, fiber.StatusBadRequest, "invalid or expired verification code")
+	case errors.Is(err, apperrors.ErrInvalidResetCode):
+		return SendErrorResponse(c, fiber.StatusBadRequest, "invalid or expired reset code")
+	case errors.Is(err, apperrors.ErrWeakPassword):
+		return SendErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	case errors.Is(err, apperrors.ErrUploadNotFound):
 		return SendErrorResponse(c, fiber.StatusNotFound, "upload not found")
 	case errors.Is(err, apperrors.ErrInviteNotFound):
